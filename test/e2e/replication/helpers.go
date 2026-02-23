@@ -324,13 +324,29 @@ func WaitForVolumeReplicationReplicatingOrCompleted(ctx context.Context, c clien
 }
 
 // hasVolumeReplicationErrorCondition returns true if the VR has an error (message set or a failure condition).
+//
+// Controller/driver behavior (see docs/testing/replication-e2e-suite.md): The csi-addons controller sets
+// error/degraded state with Status==ConditionTrue (e.g. ConditionDegraded with Reason Error in setFailedPromotionCondition,
+// setFailedDemotionCondition, etc.). It does not use ConditionFalse to signal "error"; ConditionFalse on
+// ConditionCompleted with a failure Reason is set alongside ConditionDegraded=True. So we must check for
+// ConditionDegraded with Status True, and ConditionCompleted False with failure Reasons, to detect real failures.
+//
+// This definition is important for L1-E-005 (idempotent second VR): when the controller does not set status on
+// a duplicate VR (idempotent no-op), the test asserts "no error" via hasVolumeReplicationErrorCondition(vr2).
+// We must not false-positive: a VR with no conditions or only initial state must not be treated as error.
+// We must detect actual controller-set failures so tests that expect error (e.g. L1-INFO-008) can pass.
 func hasVolumeReplicationErrorCondition(vr *replicationv1alpha1.VolumeReplication) bool {
 	if vr.Status.Message != "" {
 		return true
 	}
 	for _, cond := range vr.Status.Conditions {
-		if cond.Status == metav1.ConditionTrue && (cond.Type == replicationv1alpha1.VolumeDegraded || cond.Type == replicationv1alpha1.Error ||
-			cond.Type == replicationv1alpha1.FailedToPromote || cond.Type == replicationv1alpha1.FailedToDemote || cond.Type == replicationv1alpha1.FailedToResync) {
+		// Degraded with Status True indicates an error state (setFailedPromotionCondition, setFailedDemotionCondition, etc.).
+		if cond.Status == metav1.ConditionTrue && cond.Type == replicationv1alpha1.ConditionDegraded {
+			return true
+		}
+		// Completed False with a failure reason indicates promote/demote/resync failure.
+		if cond.Status == metav1.ConditionFalse && cond.Type == replicationv1alpha1.ConditionCompleted &&
+			(cond.Reason == replicationv1alpha1.FailedToPromote || cond.Reason == replicationv1alpha1.FailedToDemote || cond.Reason == replicationv1alpha1.FailedToResync) {
 			return true
 		}
 	}
@@ -360,6 +376,8 @@ func WaitForVolumeReplicationReplicatingOrCompletedUntil(ctx context.Context, c 
 }
 
 // WaitForVolumeReplicationError waits until the VR has any error condition or message indicating failure.
+// Uses hasVolumeReplicationErrorCondition, which is aligned with csi-addons controller behavior (error/degraded
+// set with ConditionTrue; see docs/testing/replication-e2e-suite.md and the comment on hasVolumeReplicationErrorCondition).
 func WaitForVolumeReplicationError(ctx context.Context, c client.Client, vr *replicationv1alpha1.VolumeReplication) {
 	key := client.ObjectKeyFromObject(vr)
 	timeout := getReplicationPollTimeout()
@@ -368,15 +386,7 @@ func WaitForVolumeReplicationError(ctx context.Context, c client.Client, vr *rep
 		if err != nil {
 			return false
 		}
-		if vr.Status.Message != "" {
-			return true
-		}
-		for _, cond := range vr.Status.Conditions {
-			if cond.Status == metav1.ConditionFalse && cond.Reason != "" {
-				return true
-			}
-		}
-		return false
+		return hasVolumeReplicationErrorCondition(vr)
 	}, timeout, pollInterval).Should(BeTrue(),
 		"VolumeReplication %s/%s should report an error", vr.Namespace, vr.Name)
 }

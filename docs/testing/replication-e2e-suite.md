@@ -150,6 +150,8 @@ Example: `./hack/diagnose-replication-vr.sh e2e-replication-b8c5f92a vr-snapshot
 
 The tests accept either `Primary` or `Unknown` when the Replicating condition is True.
 
+**Error conditions:** The controller signals failure by setting **ConditionDegraded** with **Status=True** (and Reason=Error, etc.), and **ConditionCompleted** with Status=False and a failure Reason (FailedToPromote, FailedToDemote, FailedToResync). It does not use ConditionFalse alone to mean "error". The e2e helpers (`hasVolumeReplicationErrorCondition`, `WaitForVolumeReplicationError`) are written to match this so that: (1) tests that expect an error (e.g. L1-INFO-008) detect it, and (2) L1-E-005’s "assert no error" on the idempotent second VR does not false-positive when the controller leaves the duplicate VR’s status untouched.
+
 ## Single cluster vs full DR (two clusters)
 
 **Single cluster (default):** Omit `DR1_CONTEXT` and `DR2_CONTEXT`; the suite uses the current kubeconfig context. Use `kubectl config use-context <name>` then `make test-replication-e2e` to target a cluster.
