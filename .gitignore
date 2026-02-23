@@ -30,3 +30,5 @@ config/manifests/bases/csi-addons.clusterserviceversion.yaml
 *.swp
 *.swo
 *~
+Reports/
+Logs/
