@@ -152,10 +152,10 @@ test: manifests generate docker-generate-protobuf fmt vet envtest ## Run tests.
 test-replication-cluster: manifests generate fmt vet envtest ## Run replication tests against existing cluster (USE_EXISTING_CLUSTER=true). Requires KUBECONFIG and CRDs installed. Output is logged to Logs/.
 	@mkdir -p Logs && LOG=Logs/test-replication-cluster_$$(date +%Y%m%d_%H%M%S).log && \
 	USE_EXISTING_CLUSTER=true go test -v ./internal/controller/replication.storage/... ./internal/client/... 2>&1 | tee "$$LOG"; \
-	echo "Log: $$LOG"; exit $${PIPESTATUS[0]}
+	RC=$${PIPESTATUS[0]}; echo "Log: $$LOG"; exit $$RC
 
 .PHONY: test-replication-e2e
-test-replication-e2e: manifests generate fmt vet ## Run replication E2E suite against existing cluster. Requires KUBECONFIG, CRDs, controller and CSI driver. Output is logged to Logs/. Use GINKGO_FOCUS to run specific tests (e.g. make test-replication-e2e GINKGO_FOCUS="L1-E-001").
+test-replication-e2e: manifests generate fmt vet ## Run replication E2E suite against existing cluster. Requires KUBECONFIG, CRDs, controller and CSI driver. Logs to Logs/ with verbose output, per-spec progress, and a detailed summary. Use GINKGO_FOCUS to run specific tests (e.g. make test-replication-e2e GINKGO_FOCUS="L1-E-001"). Use GINKGO_VERBOSE=vv for maximal verbosity.
 	@bash ./hack/run-replication-e2e.sh
 
 .PHONY: clean-replication-e2e

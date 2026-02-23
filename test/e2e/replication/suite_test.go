@@ -19,9 +19,12 @@ package replication
 import (
 	"fmt"
 	"os"
+	"strings"
 	"testing"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
+	"github.com/onsi/ginkgo/v2/types"
 	. "github.com/onsi/gomega"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
@@ -99,6 +102,62 @@ var _ = BeforeSuite(func() {
 
 	_, _ = fmt.Fprintf(GinkgoWriter, "[Replication E2E] BeforeSuite: ready\n")
 })
+
+// ReportAfterEach logs each spec's completion for progress visibility in logs.
+var _ = ReportAfterEach(func(report types.SpecReport) {
+	stateStr := report.State.String()
+	dur := report.RunTime.Round(time.Millisecond)
+	_, _ = fmt.Fprintf(GinkgoWriter, "[Spec] %s -> %s (%s)\n", report.FullText(), stateStr, dur)
+})
+
+// ReportAfterSuite writes a detailed summary of the run to GinkgoWriter (and thus to the log file).
+var _ = ReportAfterSuite("Replication E2E detailed summary", func(report types.Report) {
+	const sep = "================================================================================"
+	_, _ = fmt.Fprintf(GinkgoWriter, "\n%s\n", sep)
+	_, _ = fmt.Fprintf(GinkgoWriter, "REPLICATION E2E SUITE — DETAILED SUMMARY\n")
+	_, _ = fmt.Fprintf(GinkgoWriter, "%s\n", sep)
+	_, _ = fmt.Fprintf(GinkgoWriter, "Suite: %s\n", report.SuiteDescription)
+	_, _ = fmt.Fprintf(GinkgoWriter, "Path:  %s\n", report.SuitePath)
+	_, _ = fmt.Fprintf(GinkgoWriter, "Result: %s\n", resultString(report.SuiteSucceeded))
+	_, _ = fmt.Fprintf(GinkgoWriter, "Started:  %s\n", report.StartTime.Format(time.RFC3339))
+	_, _ = fmt.Fprintf(GinkgoWriter, "Finished: %s\n", report.EndTime.Format(time.RFC3339))
+	_, _ = fmt.Fprintf(GinkgoWriter, "Duration: %s\n", report.RunTime.Round(time.Millisecond))
+	_, _ = fmt.Fprintf(GinkgoWriter, "Pre-run: total specs=%d, specs to run=%d\n", report.PreRunStats.TotalSpecs, report.PreRunStats.SpecsThatWillRun)
+	if len(report.SpecialSuiteFailureReasons) > 0 {
+		_, _ = fmt.Fprintf(GinkgoWriter, "Special failure reasons:\n")
+		for _, r := range report.SpecialSuiteFailureReasons {
+			_, _ = fmt.Fprintf(GinkgoWriter, "  - %s\n", r)
+		}
+	}
+	_, _ = fmt.Fprintf(GinkgoWriter, "\n--- Test case execution details ---\n")
+	for i, spec := range report.SpecReports {
+		idx := i + 1
+		stateStr := spec.State.String()
+		dur := spec.RunTime.Round(time.Millisecond)
+		_, _ = fmt.Fprintf(GinkgoWriter, "%d. [%s] %s (duration: %s)\n", idx, stateStr, spec.FullText(), dur)
+		if spec.Failed() && spec.Failure.Message != "" {
+			msg := strings.TrimSpace(spec.Failure.Message)
+			if len(msg) > 500 {
+				msg = msg[:500] + "..."
+			}
+			_, _ = fmt.Fprintf(GinkgoWriter, "   Failure: %s\n", strings.ReplaceAll(msg, "\n", "\n   "))
+		}
+	}
+	passed := report.SpecReports.CountWithState(types.SpecStatePassed)
+	failed := report.SpecReports.CountWithState(types.SpecStateFailureStates)
+	skipped := report.SpecReports.CountWithState(types.SpecStateSkipped)
+	pending := report.SpecReports.CountWithState(types.SpecStatePending)
+	_, _ = fmt.Fprintf(GinkgoWriter, "\n--- Counts ---\n")
+	_, _ = fmt.Fprintf(GinkgoWriter, "Passed: %d | Failed: %d | Skipped: %d | Pending: %d\n", passed, failed, skipped, pending)
+	_, _ = fmt.Fprintf(GinkgoWriter, "%s\n", sep)
+})
+
+func resultString(succeeded bool) string {
+	if succeeded {
+		return "SUCCESS"
+	}
+	return "FAILED"
+}
 
 // restConfig builds a rest.Config using the same rules as kubectl: KUBECONFIG
 // env var if set, otherwise the default kubeconfig path (~/.kube/config).
