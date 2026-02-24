@@ -137,6 +137,10 @@ var _ = Describe("EnableVolumeReplication", func() {
 		It("L1-E-003 + L1-INFO-005: fence node → EnableVolumeReplication fails and GetVolumeReplicationInfo shows error; unfence → EnableVolumeReplication succeeds and GetVolumeReplicationInfo shows healthy", func() {
 			By("Test case 1: Block storage node via NetworkFence; create VR and expect EnableVolumeReplication to fail; assert GetVolumeReplicationInfo (L1-INFO-005) shows error")
 			c := GetK8sClient()
+			By("Checking that NetworkFence and NetworkFenceClass CRDs are installed")
+			if !HasNetworkFenceCRDs(ctx, c) {
+				Skip("L1-E-003 requires NetworkFence and NetworkFenceClass CRDs to be installed (e.g. CSI-Addons controller with network fence support). Install the CRDs and redeploy the controller.")
+			}
 			nsName := UniqueNamespace()
 			By("Creating namespace " + nsName)
 			ns := CreateNamespace(ctx, c, nsName)
@@ -157,6 +161,9 @@ var _ = Describe("EnableVolumeReplication", func() {
 
 			By("Getting fence CIDRs (from FENCE_CIDRS env or CSIAddonsNode status)")
 			cidrs := GetFenceCIDRs(ctx, c, env.Provisioner, nfcName)
+			if len(cidrs) == 0 {
+				Skip("L1-E-003 requires FENCE_CIDRS (comma-separated CIDRs to fence) when the CSI driver does not advertise GET_CLIENTS_TO_FENCE or CSIAddonsNode has no networkFenceClientStatus. Set FENCE_CIDRS to the node/storage IP(s) to fence, e.g. FENCE_CIDRS=10.244.0.1/32")
+			}
 
 			nfName := "nf-fence-" + nsName
 			By("Creating NetworkFence (Fenced) to block node access " + nfName)

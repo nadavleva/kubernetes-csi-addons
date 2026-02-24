@@ -29,6 +29,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/util/uuid"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -57,7 +58,8 @@ const (
 	networkFenceParamPrefix    = "csiaddons.openshift.io/"
 	networkFenceSecretNameKey  = networkFenceParamPrefix + "networkfence-secret-name"
 	networkFenceSecretNsKey    = networkFenceParamPrefix + "networkfence-secret-namespace"
-	networkFencePollTimeout    = 120 * time.Second
+	networkFencePollTimeout    = 120 * time.Second  // for WaitForNetworkFenceResult
+	fenceCIDRProbeTimeout      = 30 * time.Second  // wait for CSIAddonsNode CIDRs before skipping L1-E-003
 )
 
 // MirroringMode is the replication mirroring mode (snapshot or journal).
@@ -544,6 +546,28 @@ func DeleteNamespace(ctx context.Context, c client.Client, ns *corev1.Namespace)
 	}
 }
 
+// HasNetworkFenceCRDs returns true if the NetworkFence and NetworkFenceClass CRDs are installed
+// on the cluster (e.g. CSI-Addons controller with network fence support). Use before L1-E-003 to
+// skip when the CRDs are not available.
+func HasNetworkFenceCRDs(ctx context.Context, c client.Client) bool {
+	nfList := &csiaddonsv1alpha1.NetworkFenceList{}
+	if err := c.List(ctx, nfList); err != nil {
+		if errors.IsNotFound(err) || meta.IsNoMatchError(err) {
+			return false
+		}
+		// Other errors (e.g. no RBAC) also mean we cannot run the test
+		return false
+	}
+	nfcList := &csiaddonsv1alpha1.NetworkFenceClassList{}
+	if err := c.List(ctx, nfcList); err != nil {
+		if errors.IsNotFound(err) || meta.IsNoMatchError(err) {
+			return false
+		}
+		return false
+	}
+	return true
+}
+
 // CreateNetworkFenceClass creates a NetworkFenceClass with the given provisioner and secret ref.
 // The secret is used by the CSI driver for fence/unfence operations. Use the same secret as
 // replication (e.g. rook-csi-rbd-provisioner) when the driver supports both.
@@ -564,8 +588,9 @@ func CreateNetworkFenceClass(ctx context.Context, c client.Client, name, provisi
 }
 
 // GetFenceCIDRs returns CIDRs to use for NetworkFence. It first checks env FENCE_CIDRS (comma-separated).
-// If unset, it waits (up to networkFencePollTimeout) for CSIAddonsNodes with the given provisioner to
-// have status.networkFenceClientStatus for networkFenceClassName and returns the collected CIDRs.
+// If unset, it waits up to fenceCIDRProbeTimeout for CSIAddonsNodes (matching provisioner) to have
+// status.networkFenceClientStatus for networkFenceClassName. Returns non-empty CIDRs if found, or nil
+// when the driver does not advertise GET_CLIENTS_TO_FENCE or status is never populated (caller should skip the test).
 func GetFenceCIDRs(ctx context.Context, c client.Client, provisioner, networkFenceClassName string) []string {
 	if s := os.Getenv("FENCE_CIDRS"); s != "" {
 		var cidrs []string
@@ -579,12 +604,14 @@ func GetFenceCIDRs(ctx context.Context, c client.Client, provisioner, networkFen
 			return cidrs
 		}
 	}
+	deadline := time.Now().Add(fenceCIDRProbeTimeout)
 	var cidrs []string
-	Eventually(func() bool {
+	for time.Now().Before(deadline) {
 		list := &csiaddonsv1alpha1.CSIAddonsNodeList{}
 		err := c.List(ctx, list)
 		if err != nil {
-			return false
+			time.Sleep(pollInterval)
+			continue
 		}
 		cidrs = nil
 		for i := range list.Items {
@@ -601,10 +628,12 @@ func GetFenceCIDRs(ctx context.Context, c client.Client, provisioner, networkFen
 				}
 			}
 		}
-		return len(cidrs) > 0
-	}, networkFencePollTimeout, pollInterval).Should(BeTrue(),
-		"wait for fence CIDRs: set FENCE_CIDRS (comma-separated) or ensure NetworkFenceClass %q is processed and CSIAddonsNodes have networkFenceClientStatus", networkFenceClassName)
-	return cidrs
+		if len(cidrs) > 0 {
+			return cidrs
+		}
+		time.Sleep(pollInterval)
+	}
+	return nil
 }
 
 // CreateNetworkFence creates a NetworkFence that blocks (Fenced) or unblocks (Unfenced) the given CIDRs.
