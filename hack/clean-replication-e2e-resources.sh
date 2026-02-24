@@ -67,7 +67,7 @@ echo "=========================================="
 echo ""
 
 # 1) Namespaces matching e2e-replication-*
-NAMESPACES=($(kubectl get namespaces -o name 2>/dev/null | sed 's|namespace/||' | grep -E '^e2e-replication-[a-f0-9]+$' || true))
+NAMESPACES=($(kubectl get namespaces -o name 2>/dev/null | sed 's|namespace/||' | grep -E '^e2e-replication-[a-fA-F0-9]+$' || true))
 if [[ ${#NAMESPACES[@]} -eq 0 ]]; then
 	echo "No e2e-replication-* namespaces found."
 else
