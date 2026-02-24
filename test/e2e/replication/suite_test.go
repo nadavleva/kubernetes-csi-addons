@@ -33,6 +33,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
+	csiaddonsv1alpha1 "github.com/csi-addons/kubernetes-csi-addons/api/csiaddons/v1alpha1"
 	replicationv1alpha1 "github.com/csi-addons/kubernetes-csi-addons/api/replication.storage/v1alpha1"
 )
 
@@ -67,8 +68,10 @@ var _ = BeforeSuite(func() {
 	}
 
 	_, _ = fmt.Fprintf(GinkgoWriter, "[Replication E2E] BeforeSuite: loading kubeconfig (KUBECONFIG=%s)\n", os.Getenv("KUBECONFIG"))
-	_, _ = fmt.Fprintf(GinkgoWriter, "[Replication E2E] BeforeSuite: registering replication API in scheme\n")
+	_, _ = fmt.Fprintf(GinkgoWriter, "[Replication E2E] BeforeSuite: registering replication and csiaddons APIs in scheme\n")
 	err := replicationv1alpha1.AddToScheme(scheme.Scheme)
+	Expect(err).NotTo(HaveOccurred())
+	err = csiaddonsv1alpha1.AddToScheme(scheme.Scheme)
 	Expect(err).NotTo(HaveOccurred())
 
 	dr1Context = os.Getenv("DR1_CONTEXT")

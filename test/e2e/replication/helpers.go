@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	. "github.com/onsi/gomega"
@@ -31,6 +32,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/uuid"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	csiaddonsv1alpha1 "github.com/csi-addons/kubernetes-csi-addons/api/csiaddons/v1alpha1"
 	replicationv1alpha1 "github.com/csi-addons/kubernetes-csi-addons/api/replication.storage/v1alpha1"
 )
 
@@ -50,6 +52,12 @@ const (
 	// Finalizer names must match internal/controller/replication.storage/finalizers.go
 	volumeReplicationFinalizer = "replication.storage.openshift.io"
 	pvcReplicationFinalizer    = "replication.storage.openshift.io/pvc-protection"
+
+	// NetworkFenceClass parameter keys (must match internal/controller/csiaddons/networkfenceclass_controller.go)
+	networkFenceParamPrefix    = "csiaddons.openshift.io/"
+	networkFenceSecretNameKey  = networkFenceParamPrefix + "networkfence-secret-name"
+	networkFenceSecretNsKey    = networkFenceParamPrefix + "networkfence-secret-namespace"
+	networkFencePollTimeout    = 120 * time.Second
 )
 
 // MirroringMode is the replication mirroring mode (snapshot or journal).
@@ -531,6 +539,119 @@ func DeletePVC(ctx context.Context, c client.Client, pvc *corev1.PersistentVolum
 // DeleteNamespace deletes a namespace and ignores NotFound.
 func DeleteNamespace(ctx context.Context, c client.Client, ns *corev1.Namespace) {
 	err := c.Delete(ctx, ns)
+	if err != nil && !errors.IsNotFound(err) {
+		Expect(err).NotTo(HaveOccurred())
+	}
+}
+
+// CreateNetworkFenceClass creates a NetworkFenceClass with the given provisioner and secret ref.
+// The secret is used by the CSI driver for fence/unfence operations. Use the same secret as
+// replication (e.g. rook-csi-rbd-provisioner) when the driver supports both.
+func CreateNetworkFenceClass(ctx context.Context, c client.Client, name, provisioner, secretName, secretNamespace string) *csiaddonsv1alpha1.NetworkFenceClass {
+	nfc := &csiaddonsv1alpha1.NetworkFenceClass{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Spec: csiaddonsv1alpha1.NetworkFenceClassSpec{
+			Provisioner: provisioner,
+			Parameters: map[string]string{
+				networkFenceSecretNameKey: secretName,
+				networkFenceSecretNsKey:   secretNamespace,
+			},
+		},
+	}
+	err := c.Create(ctx, nfc)
+	Expect(err).NotTo(HaveOccurred())
+	return nfc
+}
+
+// GetFenceCIDRs returns CIDRs to use for NetworkFence. It first checks env FENCE_CIDRS (comma-separated).
+// If unset, it waits (up to networkFencePollTimeout) for CSIAddonsNodes with the given provisioner to
+// have status.networkFenceClientStatus for networkFenceClassName and returns the collected CIDRs.
+func GetFenceCIDRs(ctx context.Context, c client.Client, provisioner, networkFenceClassName string) []string {
+	if s := os.Getenv("FENCE_CIDRS"); s != "" {
+		var cidrs []string
+		for _, part := range strings.Split(s, ",") {
+			part = strings.TrimSpace(part)
+			if part != "" {
+				cidrs = append(cidrs, part)
+			}
+		}
+		if len(cidrs) > 0 {
+			return cidrs
+		}
+	}
+	var cidrs []string
+	Eventually(func() bool {
+		list := &csiaddonsv1alpha1.CSIAddonsNodeList{}
+		err := c.List(ctx, list)
+		if err != nil {
+			return false
+		}
+		cidrs = nil
+		for i := range list.Items {
+			node := &list.Items[i]
+			if node.Spec.Driver.Name != provisioner {
+				continue
+			}
+			for _, nfcs := range node.Status.NetworkFenceClientStatus {
+				if nfcs.NetworkFenceClassName != networkFenceClassName {
+					continue
+				}
+				for _, detail := range nfcs.ClientDetails {
+					cidrs = append(cidrs, detail.Cidrs...)
+				}
+			}
+		}
+		return len(cidrs) > 0
+	}, networkFencePollTimeout, pollInterval).Should(BeTrue(),
+		"wait for fence CIDRs: set FENCE_CIDRS (comma-separated) or ensure NetworkFenceClass %q is processed and CSIAddonsNodes have networkFenceClientStatus", networkFenceClassName)
+	return cidrs
+}
+
+// CreateNetworkFence creates a NetworkFence that blocks (Fenced) or unblocks (Unfenced) the given CIDRs.
+func CreateNetworkFence(ctx context.Context, c client.Client, name, networkFenceClassName string, cidrs []string, fenceState csiaddonsv1alpha1.FenceState) *csiaddonsv1alpha1.NetworkFence {
+	nf := &csiaddonsv1alpha1.NetworkFence{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Spec: csiaddonsv1alpha1.NetworkFenceSpec{
+			NetworkFenceClassName: networkFenceClassName,
+			FenceState:            fenceState,
+			Cidrs:                 cidrs,
+		},
+	}
+	err := c.Create(ctx, nf)
+	Expect(err).NotTo(HaveOccurred())
+	return nf
+}
+
+// WaitForNetworkFenceResult waits until the NetworkFence status has the given Result or times out.
+func WaitForNetworkFenceResult(ctx context.Context, c client.Client, nf *csiaddonsv1alpha1.NetworkFence, result csiaddonsv1alpha1.FencingOperationResult) {
+	key := client.ObjectKeyFromObject(nf)
+	Eventually(func() bool {
+		err := c.Get(ctx, key, nf)
+		if err != nil {
+			return false
+		}
+		return nf.Status.Result == result
+	}, networkFencePollTimeout, pollInterval).Should(BeTrue(),
+		"NetworkFence %s should get status.result=%s (got %s)", nf.Name, result, nf.Status.Result)
+}
+
+// DeleteNetworkFence deletes a NetworkFence (unfence is performed by the controller on delete).
+func DeleteNetworkFence(ctx context.Context, c client.Client, nf *csiaddonsv1alpha1.NetworkFence) {
+	if nf == nil {
+		return
+	}
+	err := c.Delete(ctx, nf)
+	if err != nil && !errors.IsNotFound(err) {
+		Expect(err).NotTo(HaveOccurred())
+	}
+}
+
+// DeleteNetworkFenceClass deletes a NetworkFenceClass.
+func DeleteNetworkFenceClass(ctx context.Context, c client.Client, nfc *csiaddonsv1alpha1.NetworkFenceClass) {
+	if nfc == nil {
+		return
+	}
+	err := c.Delete(ctx, nfc)
 	if err != nil && !errors.IsNotFound(err) {
 		Expect(err).NotTo(HaveOccurred())
 	}

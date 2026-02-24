@@ -10,7 +10,7 @@ The replication E2E suite runs cluster-facing tests that create VolumeReplicatio
 ## Location
 
 - **Package**: `test/e2e/replication/`
-- **Scenarios**: EnableVolumeReplication (L1-E-001, L1-E-002, L1-E-004, L1-E-005, L1-E-006, L1-E-007, L1-E-008, L1-E-009), GetVolumeReplicationInfo (L1-INFO-001, L1-INFO-008, L1-INFO-011, L1-INFO-012, L1-INFO-013, L1-INFO-014), and Full DR (two clusters). L1-E-003 (peer unreachable) is not implemented.
+- **Scenarios**: EnableVolumeReplication (L1-E-001, L1-E-002, L1-E-003, L1-E-004, L1-E-005, L1-E-006, L1-E-007, L1-E-008, L1-E-009), GetVolumeReplicationInfo (L1-INFO-001, L1-INFO-005, L1-INFO-008, L1-INFO-011, L1-INFO-012, L1-INFO-013, L1-INFO-014), and Full DR (two clusters). L1-E-003 uses NetworkFence to block the node so EnableVolumeReplication fails, then unfences and asserts success.
 
 ## Cleanup
 
@@ -90,6 +90,7 @@ make test-replication-e2e GINKGO_FOCUS="L1-E-001"
 | `REPLICATION_TEST_TIMEOUT`     | Go test timeout for the entire suite (e.g. `30m`, `60m`). Prevents "test timed out after 10m0s". | `30m` |
 | `DR1_CONTEXT`                  | Kubeconfig context name for primary cluster (DR1). Set with `DR2_CONTEXT` for full-DR mode. | (unset) |
 | `DR2_CONTEXT`                  | Kubeconfig context name for secondary cluster (DR2). Set with `DR1_CONTEXT` for full-DR mode. | (unset) |
+| `FENCE_CIDRS`                  | Comma-separated CIDRs for L1-E-003 (peer unreachable) NetworkFence test. If unset, CIDRs are read from CSIAddonsNode `status.networkFenceClientStatus` after creating a NetworkFenceClass. | (from CSIAddonsNode) |
 
 **VRC and timeouts:** Tests create their own VolumeReplicationClasses (e.g. `vrc-snapshot-<ns>`, `vrc-journal-<ns>`) with **scheduling interval 1m** for snapshot mode so the first replication cycle can complete within the wait window. They do not use existing cluster VRCs (e.g. `vrc-5m`). If Replicating=True is not set within the timeout (e.g. journal mode or a slow cluster), increase **`REPLICATION_POLL_TIMEOUT`** (seconds). Test output includes step-by-step progress and per-poll VR status (`state`, `conditions`) when waiting.
 
@@ -106,12 +107,13 @@ REPLICATION_SECRET_NAME=rook-csi-rbd-provisioner REPLICATION_SECRET_NAMESPACE=ro
 
 ## Test IDs (current)
 
-The suite has **10 specs** covering **18 test cases**. Enable and GetVolumeReplicationInfo are combined: each Enable spec asserts the corresponding GetInfo outcome (success: L1-INFO-001; error: L1-INFO-011, L1-INFO-012, L1-INFO-013, L1-INFO-014). The GetVolumeReplicationInfo validations are executed as part of each Enable spec (see log STEP lines: "Assertions: GetVolumeReplicationInfo (L1-INFO-xxx)").
+The suite has **11 specs** covering **22 test cases**. Enable and GetVolumeReplicationInfo are combined: each Enable spec asserts the corresponding GetInfo outcome (success: L1-INFO-001; error: L1-INFO-005, L1-INFO-011, L1-INFO-012, L1-INFO-013, L1-INFO-014). The GetVolumeReplicationInfo validations are executed as part of each Enable spec (see log STEP lines: "Assertions: GetVolumeReplicationInfo (L1-INFO-xxx)").
 
 | Spec                         | Test cases covered        | Description                                                                 |
 |------------------------------|---------------------------|-----------------------------------------------------------------------------|
 | L1-E-001 + L1-INFO-001       | 2 (Enable snapshot, GetInfo) | Enable snapshot mode; assert VR state and replication info (conditions)   |
 | L1-E-002 + L1-INFO-001       | 2 (Enable journal, GetInfo)  | Enable journal mode; assert VR state and replication info (conditions)   |
+| L1-E-003 + L1-INFO-005 + L1-INFO-001 | 4 (Peer unreachable) | NetworkFence blocks node → EnableVolumeReplication fails, GetVolumeReplicationInfo (L1-INFO-005) shows error; delete fence → EnableVolumeReplication succeeds, GetVolumeReplicationInfo (L1-INFO-001) shows healthy |
 | L1-E-004 + L1-INFO-012       | 2 (Invalid interval, GetInfo error) | Invalid schedulingInterval returns error; GetVolumeReplicationInfo returns error state |
 | L1-E-005 + L1-INFO-001       | 2 (Idempotent enable, GetInfo) | Idempotent enable on first VR; assert first VR state and conditions; second VR idempotent |
 | L1-E-006 + L1-INFO-013       | 2 (Invalid secret, GetInfo error) | Secret missing/invalid returns error; GetVolumeReplicationInfo returns error state |
@@ -121,7 +123,7 @@ The suite has **10 specs** covering **18 test cases**. Enable and GetVolumeRepli
 | L1-INFO-008                  | 1                         | Non-existent volume returns error in VR status                              |
 | Full DR (two clusters)       | 1                         | Creates namespace on both DR1 and DR2, PVC and VR on DR1 only              |
 
-**Total: 10 specs, 18 test cases** (8 Enable specs × 2 each = 16, L1-INFO-008 = 1, Full DR = 1). GetVolumeReplicationInfo: L1-INFO-001 ×4, L1-INFO-008, L1-INFO-011, L1-INFO-012, L1-INFO-013, L1-INFO-014. L1-E-003 (peer cluster unreachable) is not implemented.
+**Total: 11 specs, 22 test cases**. L1-E-003 (peer unreachable) uses NetworkFenceClass and NetworkFence to block the storage node so EnableVolumeReplication fails; then the test deletes the NetworkFence (unfence) and asserts EnableVolumeReplication succeeds and GetVolumeReplicationInfo returns healthy. CIDRs for fencing come from env `FENCE_CIDRS` or from CSIAddonsNode `status.networkFenceClientStatus` after the test creates a NetworkFenceClass.
 
 ## Cleanup and finalizers
 

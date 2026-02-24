@@ -113,12 +113,41 @@ if kubectl get crd volumereplicationclasses.replication.storage.openshift.io &>/
 	echo ""
 	echo "Cleaning test VolumeReplicationClasses..."
 	for vrc in $(kubectl get volumereplicationclass -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do
-		if [[ "$vrc" == vrc-snapshot-* ]] || [[ "$vrc" == vrc-journal-* ]] || [[ "$vrc" == vrc-idem-* ]] || [[ "$vrc" == vrc-info-* ]] || [[ "$vrc" == vrc-nonexist-* ]]; then
+		if [[ "$vrc" == vrc-snapshot-* ]] || [[ "$vrc" == vrc-journal-* ]] || [[ "$vrc" == vrc-idem-* ]] || [[ "$vrc" == vrc-info-* ]] || [[ "$vrc" == vrc-nonexist-* ]] || [[ "$vrc" == vrc-fence-* ]]; then
 			if [[ "$DRY_RUN" == "true" ]]; then
 				echo "  [dry-run] would delete VRC $vrc"
 			else
 				kubectl delete volumereplicationclass "$vrc" --ignore-not-found --timeout=10s 2>/dev/null || true
 				echo "  Deleted VRC $vrc"
+			fi
+		fi
+	done
+fi
+
+# 3) NetworkFence and NetworkFenceClass created by L1-E-003 test
+if kubectl get crd networkfences.csiaddons.openshift.io &>/dev/null; then
+	echo ""
+	echo "Cleaning test NetworkFences..."
+	for nf in $(kubectl get networkfence -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do
+		if [[ "$nf" == nf-fence-* ]]; then
+			if [[ "$DRY_RUN" == "true" ]]; then
+				echo "  [dry-run] would delete NetworkFence $nf"
+			else
+				kubectl delete networkfence "$nf" --ignore-not-found --timeout=30s 2>/dev/null || true
+				echo "  Deleted NetworkFence $nf"
+			fi
+		fi
+	done
+fi
+if kubectl get crd networkfenceclasses.csiaddons.openshift.io &>/dev/null; then
+	echo "Cleaning test NetworkFenceClasses..."
+	for nfc in $(kubectl get networkfenceclass -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do
+		if [[ "$nfc" == nfc-fence-* ]]; then
+			if [[ "$DRY_RUN" == "true" ]]; then
+				echo "  [dry-run] would delete NetworkFenceClass $nfc"
+			else
+				kubectl delete networkfenceclass "$nfc" --ignore-not-found --timeout=10s 2>/dev/null || true
+				echo "  Deleted NetworkFenceClass $nfc"
 			fi
 		fi
 	done

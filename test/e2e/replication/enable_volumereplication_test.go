@@ -26,6 +26,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	csiaddonsv1alpha1 "github.com/csi-addons/kubernetes-csi-addons/api/csiaddons/v1alpha1"
 	replicationv1alpha1 "github.com/csi-addons/kubernetes-csi-addons/api/replication.storage/v1alpha1"
 )
 
@@ -129,6 +130,81 @@ var _ = Describe("EnableVolumeReplication", func() {
 			By("Assertions: GetVolumeReplicationInfo (L1-INFO-001) — replication info present")
 			Expect(vr.Status.Conditions).NotTo(BeEmpty(),
 				"GetVolumeReplicationInfo: VR status conditions must be set for healthy replication (conditions: %v)", vr.Status.Conditions)
+		})
+	})
+
+	Describe("L1-E-003: Peer unreachable (NetworkFence)", func() {
+		It("L1-E-003 + L1-INFO-005: fence node → EnableVolumeReplication fails and GetVolumeReplicationInfo shows error; unfence → EnableVolumeReplication succeeds and GetVolumeReplicationInfo shows healthy", func() {
+			By("Test case 1: Block storage node via NetworkFence; create VR and expect EnableVolumeReplication to fail; assert GetVolumeReplicationInfo (L1-INFO-005) shows error")
+			c := GetK8sClient()
+			nsName := UniqueNamespace()
+			By("Creating namespace " + nsName)
+			ns := CreateNamespace(ctx, c, nsName)
+
+			secretName, secretNs := ReplicationSecretRef(ctx, c, env, nsName)
+			By("Creating PVC and waiting for Bound")
+			pvc := CreatePVC(ctx, c, nsName, "pvc-fence", env.StorageClass, "1Gi", func(p *corev1.PersistentVolumeClaim) {
+				fmt.Fprintf(GinkgoWriter, "  [PVC] %s\n", FormatPVCStatus(p))
+			})
+
+			vrcName := "vrc-fence-" + nsName
+			By("Creating VolumeReplicationClass (snapshot) " + vrcName)
+			vrc := CreateVolumeReplicationClass(ctx, c, vrcName, env.Provisioner, secretName, secretNs, MirroringModeSnapshot)
+
+			nfcName := "nfc-fence-" + nsName
+			By("Creating NetworkFenceClass " + nfcName + " (same provisioner and secret as VRC)")
+			nfc := CreateNetworkFenceClass(ctx, c, nfcName, env.Provisioner, secretName, secretNs)
+
+			By("Getting fence CIDRs (from FENCE_CIDRS env or CSIAddonsNode status)")
+			cidrs := GetFenceCIDRs(ctx, c, env.Provisioner, nfcName)
+
+			nfName := "nf-fence-" + nsName
+			By("Creating NetworkFence (Fenced) to block node access " + nfName)
+			nf := CreateNetworkFence(ctx, c, nfName, nfcName, cidrs, csiaddonsv1alpha1.Fenced)
+			By("Waiting for NetworkFence to report Succeeded")
+			WaitForNetworkFenceResult(ctx, c, nf, csiaddonsv1alpha1.FencingOperationResultSucceeded)
+
+			vrName := "vr-fence"
+			By("Creating VolumeReplication " + vrName + " while node is fenced (EnableVolumeReplication should fail)")
+			vr := CreateVolumeReplication(ctx, c, nsName, vrName, vrcName, pvc.Name, replicationv1alpha1.Primary)
+
+			DeferCleanup(func() {
+				cleanupCtx := context.Background()
+				DeleteVolumeReplicationWithCleanup(cleanupCtx, c, vr)
+				DeleteNetworkFence(cleanupCtx, c, nf)
+				DeleteNetworkFenceClass(cleanupCtx, c, nfc)
+				DeleteVolumeReplicationClass(cleanupCtx, c, vrc)
+				DeletePVCWithCleanup(cleanupCtx, c, pvc)
+				DeleteNamespace(cleanupCtx, c, ns)
+			})
+
+			By("Waiting for VR to report error (peer unreachable)")
+			WaitForVolumeReplicationError(ctx, c, vr)
+			err := c.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrName}, vr)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Assertions: GetVolumeReplicationInfo (L1-INFO-005) — peer unreachable returns error in VR status")
+			Expect(hasVolumeReplicationErrorCondition(vr)).To(BeTrue(),
+				"GetVolumeReplicationInfo (L1-INFO-005): VR with fenced/peer unreachable must have error (message or degraded condition)")
+
+			By("Deleting NetworkFence to unfence the node")
+			DeleteNetworkFence(ctx, c, nf)
+			nf = nil // avoid double-delete in cleanup
+
+			By("Waiting for controller to retry and EnableVolumeReplication to succeed")
+			WaitForVolumeReplicationReplicatingOrCompleted(ctx, c, vr, func(v *replicationv1alpha1.VolumeReplication) {
+				fmt.Fprintf(GinkgoWriter, "  [VR] %s\n", FormatVRStatus(v))
+			})
+			err = c.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrName}, vr)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Assertions: EnableVolumeReplication (L1-E-003) — VR state after unfence and successful enable")
+			Expect(vr.Status.State).To(Or(Equal(replicationv1alpha1.PrimaryState), Equal(replicationv1alpha1.UnknownState)),
+				"EnableVolumeReplication: VR state must be Primary or Unknown after unfence and successful enable, got %q", vr.Status.State)
+
+			By("Assertions: GetVolumeReplicationInfo (L1-INFO-001) — replication info present after unfence")
+			Expect(vr.Status.Conditions).NotTo(BeEmpty(),
+				"GetVolumeReplicationInfo: VR status conditions must be set for healthy replication after unfence (conditions: %v)", vr.Status.Conditions)
 		})
 	})
 
