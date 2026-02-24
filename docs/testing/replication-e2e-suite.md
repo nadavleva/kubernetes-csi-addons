@@ -5,7 +5,7 @@ The replication E2E suite runs cluster-facing tests that create VolumeReplicatio
 ## Location
 
 - **Package**: `test/e2e/replication/`
-- **Scenarios**: EnableVolumeReplication (L1-E-001, L1-E-002, L1-E-005), GetVolumeReplicationInfo (L1-INFO-001, L1-INFO-008)
+- **Scenarios**: EnableVolumeReplication and GetVolumeReplicationInfo (healthy) are run in the same spec for L1-E-001, L1-E-002, and L1-E-005; L1-INFO-008 (non-existent volume) is a separate negative spec.
 
 ## Cleanup
 
@@ -101,13 +101,16 @@ REPLICATION_SECRET_NAME=rook-csi-rbd-provisioner REPLICATION_SECRET_NAMESPACE=ro
 
 ## Test IDs (current)
 
-| ID         | API / scenario                          | Description                                      |
-|------------|-----------------------------------------|--------------------------------------------------|
-| L1-E-001   | EnableVolumeReplication                 | Enable snapshot mode; VR gets success condition  |
-| L1-E-002   | EnableVolumeReplication                 | Enable journal mode; VR gets success condition   |
-| L1-E-005   | EnableVolumeReplication                 | Idempotent enable on already enabled volume      |
-| L1-INFO-001| GetVolumeReplicationInfo                | Query healthy replication status                 |
-| L1-INFO-008| GetVolumeReplicationInfo                | Non-existent volume returns error in VR status   |
+The suite has **4 specs** covering **6 test cases**. Enable and GetInfo (healthy) are combined: each of L1-E-001, L1-E-002, and L1-E-005 runs the operation then asserts GetVolumeReplicationInfo (L1-INFO-001) in the same spec.
+
+| Spec                         | Test cases covered        | Description                                                                 |
+|------------------------------|---------------------------|-----------------------------------------------------------------------------|
+| L1-E-001 + L1-INFO-001       | 2 (Enable snapshot, GetInfo) | Enable snapshot mode; assert VR state and replication info (conditions)   |
+| L1-E-002 + L1-INFO-001       | 2 (Enable journal, GetInfo)  | Enable journal mode; assert VR state and replication info (conditions)   |
+| L1-E-005 + L1-INFO-001       | 2 (Idempotent enable, GetInfo) | Idempotent enable on first VR; assert first VR state and conditions; second VR idempotent |
+| L1-INFO-008                  | 1                         | Non-existent volume returns error in VR status                              |
+
+**Total: 4 specs, 6 test cases** (L1-E-001, L1-E-002, L1-E-005, L1-INFO-001 ×3 merged into Enable specs, L1-INFO-008).
 
 ## Cleanup and finalizers
 

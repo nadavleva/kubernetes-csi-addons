@@ -39,8 +39,8 @@ var _ = Describe("EnableVolumeReplication", func() {
 	})
 
 	Describe("L1-E-001: Enable snapshot mode", func() {
-		It("L1-E-001 enables replication with snapshot mode and VR gets success condition", func() {
-			By("Starting L1-E-001: Enable snapshot mode")
+		It("L1-E-001 + L1-INFO-001: enable snapshot mode then get replication info (2 test cases)", func() {
+			By("Test case 1: EnableVolumeReplication (L1-E-001) — enable snapshot mode")
 			c := GetK8sClient()
 			nsName := UniqueNamespace()
 			By("Creating namespace " + nsName)
@@ -74,15 +74,20 @@ var _ = Describe("EnableVolumeReplication", func() {
 			})
 			err := c.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrName}, vr)
 			Expect(err).NotTo(HaveOccurred())
-			By("VR state: " + string(vr.Status.State))
-			// State is set by controller after successful enable; some drivers may leave it Unknown
-			Expect(vr.Status.State).To(Or(Equal(replicationv1alpha1.PrimaryState), Equal(replicationv1alpha1.UnknownState)))
+
+			By("Assertions: EnableVolumeReplication (L1-E-001) — VR state after enable")
+			Expect(vr.Status.State).To(Or(Equal(replicationv1alpha1.PrimaryState), Equal(replicationv1alpha1.UnknownState)),
+				"EnableVolumeReplication: VR state must be Primary or Unknown after successful enable, got %q", vr.Status.State)
+
+			By("Assertions: GetVolumeReplicationInfo (L1-INFO-001) — replication info present")
+			Expect(vr.Status.Conditions).NotTo(BeEmpty(),
+				"GetVolumeReplicationInfo: VR status conditions must be set for healthy replication (conditions: %v)", vr.Status.Conditions)
 		})
 	})
 
 	Describe("L1-E-002: Enable journal mode", func() {
-		It("L1-E-002 enables replication with journal mode and VR gets success condition", func() {
-			By("Starting L1-E-002: Enable journal mode")
+		It("L1-E-002 + L1-INFO-001: enable journal mode then get replication info (2 test cases)", func() {
+			By("Test case 1: EnableVolumeReplication (L1-E-002) — enable journal mode")
 			c := GetK8sClient()
 			nsName := UniqueNamespace()
 			By("Creating namespace " + nsName)
@@ -116,14 +121,20 @@ var _ = Describe("EnableVolumeReplication", func() {
 			})
 			err := c.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrName}, vr)
 			Expect(err).NotTo(HaveOccurred())
-			By("VR state: " + string(vr.Status.State))
-			Expect(vr.Status.State).To(Or(Equal(replicationv1alpha1.PrimaryState), Equal(replicationv1alpha1.UnknownState)))
+
+			By("Assertions: EnableVolumeReplication (L1-E-002) — VR state after enable")
+			Expect(vr.Status.State).To(Or(Equal(replicationv1alpha1.PrimaryState), Equal(replicationv1alpha1.UnknownState)),
+				"EnableVolumeReplication: VR state must be Primary or Unknown after successful enable, got %q", vr.Status.State)
+
+			By("Assertions: GetVolumeReplicationInfo (L1-INFO-001) — replication info present")
+			Expect(vr.Status.Conditions).NotTo(BeEmpty(),
+				"GetVolumeReplicationInfo: VR status conditions must be set for healthy replication (conditions: %v)", vr.Status.Conditions)
 		})
 	})
 
 	Describe("L1-E-005: Idempotent enable", func() {
-		It("L1-E-005 enabling replication on already enabled volume is idempotent", func() {
-			By("Starting L1-E-005: Idempotent enable")
+		It("L1-E-005 + L1-INFO-001: idempotent enable then get replication info (2 test cases)", func() {
+			By("Test case 1: EnableVolumeReplication (L1-E-005) — idempotent enable; GetVolumeReplicationInfo (L1-INFO-001) on first VR")
 			c := GetK8sClient()
 			nsName := UniqueNamespace()
 			By("Creating namespace " + nsName)
@@ -149,10 +160,16 @@ var _ = Describe("EnableVolumeReplication", func() {
 			})
 			err := c.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrName}, vr)
 			Expect(err).NotTo(HaveOccurred())
-			By("First VR state: " + string(vr.Status.State))
-			Expect(vr.Status.State).To(Or(Equal(replicationv1alpha1.PrimaryState), Equal(replicationv1alpha1.UnknownState)))
 
-			// Create a second VR for the same PVC (same volume) - controller should treat as idempotent / no error
+			By("Assertions: EnableVolumeReplication (L1-E-005) — first VR state after enable")
+			Expect(vr.Status.State).To(Or(Equal(replicationv1alpha1.PrimaryState), Equal(replicationv1alpha1.UnknownState)),
+				"EnableVolumeReplication: VR state must be Primary or Unknown after successful enable, got %q", vr.Status.State)
+
+			By("Assertions: GetVolumeReplicationInfo (L1-INFO-001) — replication info present on first VR")
+			Expect(vr.Status.Conditions).NotTo(BeEmpty(),
+				"GetVolumeReplicationInfo: VR status conditions must be set for healthy replication (conditions: %v)", vr.Status.Conditions)
+
+			// Test case 2: Create a second VR for the same PVC (same volume) - controller should treat as idempotent / no error
 			vr2Name := "vr-idem-second"
 			By("Creating second VolumeReplication " + vr2Name + " for same PVC")
 			vr2 := CreateVolumeReplication(ctx, c, nsName, vr2Name, vrcName, pvc.Name, replicationv1alpha1.Primary)
@@ -175,11 +192,13 @@ var _ = Describe("EnableVolumeReplication", func() {
 			err = c.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vr2Name}, vr2)
 			Expect(err).NotTo(HaveOccurred())
 			if gotSuccess {
-				By("Second VR state: " + string(vr2.Status.State))
-				Expect(vr2.Status.State).To(Or(Equal(replicationv1alpha1.PrimaryState), Equal(replicationv1alpha1.UnknownState)))
+				By("Assertions: EnableVolumeReplication (L1-E-005) — second VR state (idempotent success)")
+				Expect(vr2.Status.State).To(Or(Equal(replicationv1alpha1.PrimaryState), Equal(replicationv1alpha1.UnknownState)),
+					"EnableVolumeReplication: second VR state must be Primary or Unknown when idempotent success, got %q", vr2.Status.State)
 			} else {
 				By("Second VR did not get success condition; asserting no error (idempotent no-op)")
-				Expect(hasVolumeReplicationErrorCondition(vr2)).To(BeFalse(), "second VR should have no error when controller does not set status")
+				Expect(hasVolumeReplicationErrorCondition(vr2)).To(BeFalse(),
+					"EnableVolumeReplication: second VR should have no error when controller does not set status (idempotent no-op)")
 			}
 		})
 	})
