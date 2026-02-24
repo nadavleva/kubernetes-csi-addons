@@ -202,4 +202,223 @@ var _ = Describe("EnableVolumeReplication", func() {
 			}
 		})
 	})
+
+	Describe("L1-E-004: Invalid schedulingInterval parameter", func() {
+		It("L1-E-004 + L1-INFO-012: invalid schedulingInterval returns error; GetVolumeReplicationInfo returns error state", func() {
+			By("Starting L1-E-004: Invalid schedulingInterval parameter")
+			c := GetK8sClient()
+			nsName := UniqueNamespace()
+			By("Creating namespace " + nsName)
+			ns := CreateNamespace(ctx, c, nsName)
+
+			secretName, secretNs := ReplicationSecretRef(ctx, c, env, nsName)
+			By("Creating PVC and waiting for Bound")
+			pvc := CreatePVC(ctx, c, nsName, "pvc-invalid-interval", env.StorageClass, "1Gi", func(p *corev1.PersistentVolumeClaim) {
+				fmt.Fprintf(GinkgoWriter, "  [PVC] %s\n", FormatPVCStatus(p))
+			})
+
+			vrcName := "vrc-invalid-interval-" + nsName
+			By("Creating VolumeReplicationClass with invalid schedulingInterval=5x")
+			vrc := CreateVolumeReplicationClassWithParams(ctx, c, vrcName, env.Provisioner, secretName, secretNs, MirroringModeSnapshot, map[string]string{
+				"schedulingInterval": "5x",
+			})
+
+			vrName := "vr-invalid-interval"
+			By("Creating VolumeReplication " + vrName)
+			vr := CreateVolumeReplication(ctx, c, nsName, vrName, vrcName, pvc.Name, replicationv1alpha1.Primary)
+
+			DeferCleanup(func() {
+				cleanupCtx := context.Background()
+				DeleteVolumeReplicationWithCleanup(cleanupCtx, c, vr)
+				DeleteVolumeReplicationClass(cleanupCtx, c, vrc)
+				DeletePVCWithCleanup(cleanupCtx, c, pvc)
+				DeleteNamespace(cleanupCtx, c, ns)
+			})
+
+			By("Waiting for error in VR status (gRPC InvalidArgument or driver error)")
+			WaitForVolumeReplicationError(ctx, c, vr)
+			err := c.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrName}, vr)
+			Expect(err).NotTo(HaveOccurred())
+			By("Assertions: L1-E-004 — invalid schedulingInterval returns error; L1-INFO-012 — GetVolumeReplicationInfo returns error state")
+			Expect(hasVolumeReplicationErrorCondition(vr)).To(BeTrue(),
+				"L1-E-004/L1-INFO-012: VR with invalid schedulingInterval must report error (message: %q)", vr.Status.Message)
+		})
+	})
+
+	Describe("L1-E-006: Secret reference missing/invalid", func() {
+		It("L1-E-006 + L1-INFO-013: missing/invalid secret returns error; GetVolumeReplicationInfo returns error state", func() {
+			By("Starting L1-E-006: Secret reference missing/invalid")
+			c := GetK8sClient()
+			nsName := UniqueNamespace()
+			By("Creating namespace " + nsName)
+			ns := CreateNamespace(ctx, c, nsName)
+
+			By("Creating PVC and waiting for Bound")
+			pvc := CreatePVC(ctx, c, nsName, "pvc-bad-secret", env.StorageClass, "1Gi", func(p *corev1.PersistentVolumeClaim) {
+				fmt.Fprintf(GinkgoWriter, "  [PVC] %s\n", FormatPVCStatus(p))
+			})
+
+			// Use non-existent secret (not created in namespace)
+			secretName := "nonexistent-replication-secret"
+			secretNs := nsName
+			vrcName := "vrc-bad-secret-" + nsName
+			By("Creating VolumeReplicationClass with non-existent secret")
+
+			vrc := CreateVolumeReplicationClassWithParams(ctx, c, vrcName, env.Provisioner, secretName, secretNs, MirroringModeSnapshot, nil)
+
+			vrName := "vr-bad-secret"
+			By("Creating VolumeReplication " + vrName)
+			vr := CreateVolumeReplication(ctx, c, nsName, vrName, vrcName, pvc.Name, replicationv1alpha1.Primary)
+
+			DeferCleanup(func() {
+				cleanupCtx := context.Background()
+				DeleteVolumeReplicationWithCleanup(cleanupCtx, c, vr)
+				DeleteVolumeReplicationClass(cleanupCtx, c, vrc)
+				DeletePVCWithCleanup(cleanupCtx, c, pvc)
+				DeleteNamespace(cleanupCtx, c, ns)
+			})
+
+			By("Waiting for error in VR status (FailedPrecondition or controller failed to get secret)")
+			WaitForVolumeReplicationError(ctx, c, vr)
+			err := c.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrName}, vr)
+			Expect(err).NotTo(HaveOccurred())
+			By("Assertions: L1-E-006 — missing/invalid secret returns error; L1-INFO-013 — GetVolumeReplicationInfo returns error state")
+			Expect(hasVolumeReplicationErrorCondition(vr)).To(BeTrue(),
+				"L1-E-006/L1-INFO-013: VR with non-existent secret must report error (message: %q)", vr.Status.Message)
+		})
+	})
+
+	Describe("L1-E-007: Invalid mirroringMode parameter", func() {
+		It("L1-E-007 + L1-INFO-011: invalid mirroringMode returns error; GetVolumeReplicationInfo returns error state", func() {
+			By("Starting L1-E-007: Invalid mirroringMode parameter")
+			c := GetK8sClient()
+			nsName := UniqueNamespace()
+			By("Creating namespace " + nsName)
+			ns := CreateNamespace(ctx, c, nsName)
+
+			secretName, secretNs := ReplicationSecretRef(ctx, c, env, nsName)
+			By("Creating PVC and waiting for Bound")
+			pvc := CreatePVC(ctx, c, nsName, "pvc-invalid-mode", env.StorageClass, "1Gi", func(p *corev1.PersistentVolumeClaim) {
+				fmt.Fprintf(GinkgoWriter, "  [PVC] %s\n", FormatPVCStatus(p))
+			})
+
+			vrcName := "vrc-invalid-mode-" + nsName
+			By("Creating VolumeReplicationClass with invalid mirroringMode=invalid")
+			vrc := CreateVolumeReplicationClassWithParams(ctx, c, vrcName, env.Provisioner, secretName, secretNs, MirroringModeSnapshot, map[string]string{
+				"mirroringMode": "invalid",
+			})
+
+			vrName := "vr-invalid-mode"
+			By("Creating VolumeReplication " + vrName)
+			vr := CreateVolumeReplication(ctx, c, nsName, vrName, vrcName, pvc.Name, replicationv1alpha1.Primary)
+
+			DeferCleanup(func() {
+				cleanupCtx := context.Background()
+				DeleteVolumeReplicationWithCleanup(cleanupCtx, c, vr)
+				DeleteVolumeReplicationClass(cleanupCtx, c, vrc)
+				DeletePVCWithCleanup(cleanupCtx, c, pvc)
+				DeleteNamespace(cleanupCtx, c, ns)
+			})
+
+			By("Waiting for error in VR status (gRPC InvalidArgument)")
+			WaitForVolumeReplicationError(ctx, c, vr)
+			err := c.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrName}, vr)
+			Expect(err).NotTo(HaveOccurred())
+			By("Assertions: L1-E-007 — invalid mirroringMode returns error; L1-INFO-011 — GetVolumeReplicationInfo returns error state")
+			Expect(hasVolumeReplicationErrorCondition(vr)).To(BeTrue(),
+				"L1-E-007/L1-INFO-011: VR with invalid mirroringMode must report error (message: %q)", vr.Status.Message)
+		})
+	})
+
+	Describe("L1-E-008: Future schedulingStartTime", func() {
+		It("L1-E-008 + L1-INFO-001: future schedulingStartTime enables replication; GetVolumeReplicationInfo returns replication info", func() {
+			By("Starting L1-E-008: Future schedulingStartTime")
+			c := GetK8sClient()
+			nsName := UniqueNamespace()
+			By("Creating namespace " + nsName)
+			ns := CreateNamespace(ctx, c, nsName)
+
+			secretName, secretNs := ReplicationSecretRef(ctx, c, env, nsName)
+			By("Creating PVC and waiting for Bound")
+			pvc := CreatePVC(ctx, c, nsName, "pvc-future-start", env.StorageClass, "1Gi", func(p *corev1.PersistentVolumeClaim) {
+				fmt.Fprintf(GinkgoWriter, "  [PVC] %s\n", FormatPVCStatus(p))
+			})
+
+			// schedulingStartTime in RFC3339 format, 30 seconds in the future
+			futureTime := time.Now().Add(30 * time.Second).UTC().Format(time.RFC3339)
+			vrcName := "vrc-future-start-" + nsName
+			By("Creating VolumeReplicationClass with schedulingStartTime=" + futureTime)
+			vrc := CreateVolumeReplicationClassWithParams(ctx, c, vrcName, env.Provisioner, secretName, secretNs, MirroringModeSnapshot, map[string]string{
+				"schedulingStartTime": futureTime,
+			})
+
+			vrName := "vr-future-start"
+			By("Creating VolumeReplication " + vrName)
+			vr := CreateVolumeReplication(ctx, c, nsName, vrName, vrcName, pvc.Name, replicationv1alpha1.Primary)
+
+			DeferCleanup(func() {
+				cleanupCtx := context.Background()
+				DeleteVolumeReplicationWithCleanup(cleanupCtx, c, vr)
+				DeleteVolumeReplicationClass(cleanupCtx, c, vrc)
+				DeletePVCWithCleanup(cleanupCtx, c, pvc)
+				DeleteNamespace(cleanupCtx, c, ns)
+			})
+
+			By("Waiting for Replicating=True or Completed=True (driver may ignore schedulingStartTime if unsupported)")
+			WaitForVolumeReplicationReplicatingOrCompleted(ctx, c, vr, func(v *replicationv1alpha1.VolumeReplication) {
+				fmt.Fprintf(GinkgoWriter, "  [VR] %s\n", FormatVRStatus(v))
+			})
+			err := c.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrName}, vr)
+			Expect(err).NotTo(HaveOccurred())
+			By("Assertions: L1-E-008 — VR enabled with future schedulingStartTime; L1-INFO-001 — GetVolumeReplicationInfo returns replication info")
+			Expect(vr.Status.State).To(Or(Equal(replicationv1alpha1.PrimaryState), Equal(replicationv1alpha1.UnknownState)),
+				"L1-E-008: VR state must be Primary or Unknown after enable with future schedulingStartTime, got %q", vr.Status.State)
+			Expect(hasReplicationSuccessCondition(vr)).To(BeTrue(),
+				"L1-E-008: VR must have Replicating or Completed condition")
+			Expect(vr.Status.Conditions).NotTo(BeEmpty(),
+				"L1-INFO-001: GetVolumeReplicationInfo — VR status conditions must be set for healthy replication (conditions: %v)", vr.Status.Conditions)
+		})
+	})
+
+	Describe("L1-E-009: Invalid schedulingStartTime format", func() {
+		It("L1-E-009 + L1-INFO-014: invalid schedulingStartTime format returns error; GetVolumeReplicationInfo returns error state", func() {
+			By("Starting L1-E-009: Invalid schedulingStartTime format")
+			c := GetK8sClient()
+			nsName := UniqueNamespace()
+			By("Creating namespace " + nsName)
+			ns := CreateNamespace(ctx, c, nsName)
+
+			secretName, secretNs := ReplicationSecretRef(ctx, c, env, nsName)
+			By("Creating PVC and waiting for Bound")
+			pvc := CreatePVC(ctx, c, nsName, "pvc-invalid-time", env.StorageClass, "1Gi", func(p *corev1.PersistentVolumeClaim) {
+				fmt.Fprintf(GinkgoWriter, "  [PVC] %s\n", FormatPVCStatus(p))
+			})
+
+			vrcName := "vrc-invalid-time-" + nsName
+			By("Creating VolumeReplicationClass with invalid schedulingStartTime=invalid")
+			vrc := CreateVolumeReplicationClassWithParams(ctx, c, vrcName, env.Provisioner, secretName, secretNs, MirroringModeSnapshot, map[string]string{
+				"schedulingStartTime": "invalid",
+			})
+
+			vrName := "vr-invalid-time"
+			By("Creating VolumeReplication " + vrName)
+			vr := CreateVolumeReplication(ctx, c, nsName, vrName, vrcName, pvc.Name, replicationv1alpha1.Primary)
+
+			DeferCleanup(func() {
+				cleanupCtx := context.Background()
+				DeleteVolumeReplicationWithCleanup(cleanupCtx, c, vr)
+				DeleteVolumeReplicationClass(cleanupCtx, c, vrc)
+				DeletePVCWithCleanup(cleanupCtx, c, pvc)
+				DeleteNamespace(cleanupCtx, c, ns)
+			})
+
+			By("Waiting for error in VR status (gRPC InvalidArgument)")
+			WaitForVolumeReplicationError(ctx, c, vr)
+			err := c.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrName}, vr)
+			Expect(err).NotTo(HaveOccurred())
+			By("Assertions: L1-E-009 — invalid schedulingStartTime format returns error; L1-INFO-014 — GetVolumeReplicationInfo returns error state")
+			Expect(hasVolumeReplicationErrorCondition(vr)).To(BeTrue(),
+				"L1-E-009/L1-INFO-014: VR with invalid schedulingStartTime format must report error (message: %q)", vr.Status.Message)
+		})
+	})
 })

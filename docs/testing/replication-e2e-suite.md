@@ -10,7 +10,7 @@ The replication E2E suite runs cluster-facing tests that create VolumeReplicatio
 ## Location
 
 - **Package**: `test/e2e/replication/`
-- **Scenarios**: EnableVolumeReplication and GetVolumeReplicationInfo (healthy) are run in the same spec for L1-E-001, L1-E-002, and L1-E-005; L1-INFO-008 (non-existent volume) is a separate negative spec.
+- **Scenarios**: EnableVolumeReplication (L1-E-001, L1-E-002, L1-E-004, L1-E-005, L1-E-006, L1-E-007, L1-E-008, L1-E-009), GetVolumeReplicationInfo (L1-INFO-001, L1-INFO-008, L1-INFO-011, L1-INFO-012, L1-INFO-013, L1-INFO-014), and Full DR (two clusters). L1-E-003 (peer unreachable) is not implemented.
 
 ## Cleanup
 
@@ -106,16 +106,22 @@ REPLICATION_SECRET_NAME=rook-csi-rbd-provisioner REPLICATION_SECRET_NAMESPACE=ro
 
 ## Test IDs (current)
 
-The suite has **4 specs** covering **6 test cases**. Enable and GetInfo (healthy) are combined: each of L1-E-001, L1-E-002, and L1-E-005 runs the operation then asserts GetVolumeReplicationInfo (L1-INFO-001) in the same spec.
+The suite has **10 specs** covering **18 test cases**. Enable and GetVolumeReplicationInfo are combined: each Enable spec asserts the corresponding GetInfo outcome (success: L1-INFO-001; error: L1-INFO-011, L1-INFO-012, L1-INFO-013, L1-INFO-014). The GetVolumeReplicationInfo validations are executed as part of each Enable spec (see log STEP lines: "Assertions: GetVolumeReplicationInfo (L1-INFO-xxx)").
 
 | Spec                         | Test cases covered        | Description                                                                 |
 |------------------------------|---------------------------|-----------------------------------------------------------------------------|
 | L1-E-001 + L1-INFO-001       | 2 (Enable snapshot, GetInfo) | Enable snapshot mode; assert VR state and replication info (conditions)   |
 | L1-E-002 + L1-INFO-001       | 2 (Enable journal, GetInfo)  | Enable journal mode; assert VR state and replication info (conditions)   |
+| L1-E-004 + L1-INFO-012       | 2 (Invalid interval, GetInfo error) | Invalid schedulingInterval returns error; GetVolumeReplicationInfo returns error state |
 | L1-E-005 + L1-INFO-001       | 2 (Idempotent enable, GetInfo) | Idempotent enable on first VR; assert first VR state and conditions; second VR idempotent |
+| L1-E-006 + L1-INFO-013       | 2 (Invalid secret, GetInfo error) | Secret missing/invalid returns error; GetVolumeReplicationInfo returns error state |
+| L1-E-007 + L1-INFO-011       | 2 (Invalid mirroringMode, GetInfo error) | Invalid mirroringMode returns error; GetVolumeReplicationInfo returns error state |
+| L1-E-008 + L1-INFO-001       | 2 (Future startTime, GetInfo) | Future schedulingStartTime enables replication; GetVolumeReplicationInfo returns replication info |
+| L1-E-009 + L1-INFO-014       | 2 (Invalid time format, GetInfo error) | Invalid schedulingStartTime format returns error; GetVolumeReplicationInfo returns error state |
 | L1-INFO-008                  | 1                         | Non-existent volume returns error in VR status                              |
+| Full DR (two clusters)       | 1                         | Creates namespace on both DR1 and DR2, PVC and VR on DR1 only              |
 
-**Total: 4 specs, 6 test cases** (L1-E-001, L1-E-002, L1-E-005, L1-INFO-001 ×3 merged into Enable specs, L1-INFO-008).
+**Total: 10 specs, 18 test cases** (8 Enable specs × 2 each = 16, L1-INFO-008 = 1, Full DR = 1). GetVolumeReplicationInfo: L1-INFO-001 ×4, L1-INFO-008, L1-INFO-011, L1-INFO-012, L1-INFO-013, L1-INFO-014. L1-E-003 (peer cluster unreachable) is not implemented.
 
 ## Cleanup and finalizers
 

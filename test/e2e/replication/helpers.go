@@ -203,6 +203,13 @@ func mustParseQuantity(s string) resource.Quantity {
 
 // CreateVolumeReplicationClass creates a VolumeReplicationClass with the given mirroring mode and provisioner.
 func CreateVolumeReplicationClass(ctx context.Context, c client.Client, name, provisioner, secretName, secretNamespace string, mode MirroringMode) *replicationv1alpha1.VolumeReplicationClass {
+	return CreateVolumeReplicationClassWithParams(ctx, c, name, provisioner, secretName, secretNamespace, mode, nil)
+}
+
+// CreateVolumeReplicationClassWithParams creates a VolumeReplicationClass with the given mirroring mode and provisioner.
+// paramOverrides, if non-nil, are merged into the base parameters (overrides take precedence).
+// Use for negative tests (e.g. invalid schedulingInterval, mirroringMode) or optional params (e.g. schedulingStartTime).
+func CreateVolumeReplicationClassWithParams(ctx context.Context, c client.Client, name, provisioner, secretName, secretNamespace string, mode MirroringMode, paramOverrides map[string]string) *replicationv1alpha1.VolumeReplicationClass {
 	params := map[string]string{
 		secretNameKey:      secretName,
 		secretNamespaceKey: secretNamespace,
@@ -216,6 +223,9 @@ func CreateVolumeReplicationClass(ctx context.Context, c client.Client, name, pr
 	default:
 		params["mirroringMode"] = "snapshot"
 		params["schedulingInterval"] = "1m"
+	}
+	for k, v := range paramOverrides {
+		params[k] = v
 	}
 	vrc := &replicationv1alpha1.VolumeReplicationClass{
 		ObjectMeta: metav1.ObjectMeta{Name: name},
