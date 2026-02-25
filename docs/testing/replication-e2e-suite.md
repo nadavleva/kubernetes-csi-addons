@@ -90,7 +90,19 @@ make test-replication-e2e GINKGO_FOCUS="L1-E-001"
 | `REPLICATION_TEST_TIMEOUT`     | Go test timeout for the entire suite (e.g. `30m`, `60m`). Prevents "test timed out after 10m0s". | `30m` |
 | `DR1_CONTEXT`                  | Kubeconfig context name for primary cluster (DR1). Set with `DR2_CONTEXT` for full-DR mode. | (unset) |
 | `DR2_CONTEXT`                  | Kubeconfig context name for secondary cluster (DR2). Set with `DR1_CONTEXT` for full-DR mode. | (unset) |
-| `FENCE_CIDRS`                  | Comma-separated CIDRs for L1-E-003 (peer unreachable) NetworkFence test. If unset, CIDRs are read from CSIAddonsNode `status.networkFenceClientStatus` after creating a NetworkFenceClass. | (from CSIAddonsNode) |
+| `FENCE_CIDRS`                  | Comma-separated CIDRs for L1-E-003 (peer unreachable) NetworkFence test. If unset, CIDRs are read from CSIAddonsNode `status.networkFenceClientStatus`, or fallback to node InternalIPs. | (CSIAddonsNode or node IPs) |
+| `FENCE_CLUSTER_ID`             | ClusterID for Ceph CSI NetworkFenceClass (required for Ceph/Rook). If unset, inferred from `REPLICATION_SECRET_NAMESPACE` when provisioner contains "ceph". | (inferred from secret namespace) |
+
+**L1-E-003 NetworkFence (Ceph CSI):** The Ceph CSI driver requires `clusterID` in NetworkFenceClass parameters for network fencing. For Rook, use the cluster namespace (e.g. `rook-ceph`). The e2e suite adds this automatically when the provisioner contains "ceph":
+
+```yaml
+parameters:
+  clusterID: rook-ceph
+  csiaddons.openshift.io/networkfence-secret-name: rook-csi-rbd-provisioner
+  csiaddons.openshift.io/networkfence-secret-namespace: rook-ceph
+```
+
+Set `FENCE_CLUSTER_ID` to override the inferred value.
 
 **VRC and timeouts:** Tests create their own VolumeReplicationClasses (e.g. `vrc-snapshot-<ns>`, `vrc-journal-<ns>`) with **scheduling interval 1m** for snapshot mode so the first replication cycle can complete within the wait window. They do not use existing cluster VRCs (e.g. `vrc-5m`). If Replicating=True is not set within the timeout (e.g. journal mode or a slow cluster), increase **`REPLICATION_POLL_TIMEOUT`** (seconds). Test output includes step-by-step progress and per-poll VR status (`state`, `conditions`) when waiting.
 
@@ -123,7 +135,7 @@ The suite has **11 specs** covering **22 test cases**. Enable and GetVolumeRepli
 | L1-INFO-008                  | 1                         | Non-existent volume returns error in VR status                              |
 | Full DR (two clusters)       | 1                         | Creates namespace on both DR1 and DR2, PVC and VR on DR1 only              |
 
-**Total: 11 specs, 22 test cases**. L1-E-003 (peer unreachable) uses NetworkFenceClass and NetworkFence to block the storage node so EnableVolumeReplication fails; then the test deletes the NetworkFence (unfence) and asserts EnableVolumeReplication succeeds and GetVolumeReplicationInfo returns healthy. **Before running**, the test checks that the **NetworkFence and NetworkFenceClass CRDs** are installed on the cluster; if not, it skips. CIDRs for fencing come from env `FENCE_CIDRS` or from CSIAddonsNode `status.networkFenceClientStatus` after the test creates a NetworkFenceClass. **If the CSI driver does not advertise GET_CLIENTS_TO_FENCE**, the test skips after waiting for CIDRs (~30s); set **`FENCE_CIDRS`** (comma-separated node/storage IPs to fence) to run L1-E-003.
+**Total: 11 specs, 22 test cases**. L1-E-003 (peer unreachable) uses NetworkFenceClass and NetworkFence to block the storage node so EnableVolumeReplication fails; then the test deletes the NetworkFence (unfence) and asserts EnableVolumeReplication succeeds and GetVolumeReplicationInfo returns healthy. **Before running**, the test checks that the **NetworkFence and NetworkFenceClass CRDs** are installed on the cluster; if not, it skips. CIDRs for fencing come from env `FENCE_CIDRS`, CSIAddonsNode `status.networkFenceClientStatus`, or **fallback to node InternalIPs** (so L1-E-003 often runs without FENCE_CIDRS in single-node setups). For **Ceph CSI (Rook)**, the test adds `clusterID` to NetworkFenceClass from `FENCE_CLUSTER_ID` or infers it from `REPLICATION_SECRET_NAMESPACE`. The test cleans up NetworkFence and NetworkFenceClass with finalizer removal if needed.
 
 ## Cleanup and finalizers
 

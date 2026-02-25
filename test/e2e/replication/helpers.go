@@ -55,11 +55,15 @@ const (
 	pvcReplicationFinalizer    = "replication.storage.openshift.io/pvc-protection"
 
 	// NetworkFenceClass parameter keys (must match internal/controller/csiaddons/networkfenceclass_controller.go)
-	networkFenceParamPrefix    = "csiaddons.openshift.io/"
-	networkFenceSecretNameKey  = networkFenceParamPrefix + "networkfence-secret-name"
-	networkFenceSecretNsKey    = networkFenceParamPrefix + "networkfence-secret-namespace"
-	networkFencePollTimeout    = 120 * time.Second  // for WaitForNetworkFenceResult
-	fenceCIDRProbeTimeout      = 30 * time.Second  // wait for CSIAddonsNode CIDRs before skipping L1-E-003
+	networkFenceParamPrefix   = "csiaddons.openshift.io/"
+	networkFenceSecretNameKey = networkFenceParamPrefix + "networkfence-secret-name"
+	networkFenceSecretNsKey   = networkFenceParamPrefix + "networkfence-secret-namespace"
+	networkFencePollTimeout   = 120 * time.Second // for WaitForNetworkFenceResult
+	fenceCIDRProbeTimeout     = 30 * time.Second // wait for CSIAddonsNode CIDRs before skipping L1-E-003
+
+	// NetworkFence/NetworkFenceClass finalizers (must match internal/controller/csiaddons/networkfence*.go)
+	networkFenceFinalizer      = "csiaddons.openshift.io/network-fence"
+	networkFenceClassFinalizer = "csiaddons.openshift.io/csiaddonsnode"
 )
 
 // MirroringMode is the replication mirroring mode (snapshot or journal).
@@ -571,15 +575,25 @@ func HasNetworkFenceCRDs(ctx context.Context, c client.Client) bool {
 // CreateNetworkFenceClass creates a NetworkFenceClass with the given provisioner and secret ref.
 // The secret is used by the CSI driver for fence/unfence operations. Use the same secret as
 // replication (e.g. rook-csi-rbd-provisioner) when the driver supports both.
+//
+// For Ceph CSI (Rook), clusterID is required. It is taken from FENCE_CLUSTER_ID env var, or
+// inferred as secretNamespace when the provisioner contains "ceph" (Rook uses namespace as clusterID).
 func CreateNetworkFenceClass(ctx context.Context, c client.Client, name, provisioner, secretName, secretNamespace string) *csiaddonsv1alpha1.NetworkFenceClass {
+	params := map[string]string{
+		networkFenceSecretNameKey: secretName,
+		networkFenceSecretNsKey:   secretNamespace,
+	}
+	// Ceph CSI requires clusterID for network fencing. Use FENCE_CLUSTER_ID or infer from secret namespace.
+	if clusterID := os.Getenv("FENCE_CLUSTER_ID"); clusterID != "" {
+		params["clusterID"] = clusterID
+	} else if strings.Contains(provisioner, "ceph") && secretNamespace != "" {
+		params["clusterID"] = secretNamespace
+	}
 	nfc := &csiaddonsv1alpha1.NetworkFenceClass{
 		ObjectMeta: metav1.ObjectMeta{Name: name},
 		Spec: csiaddonsv1alpha1.NetworkFenceClassSpec{
 			Provisioner: provisioner,
-			Parameters: map[string]string{
-				networkFenceSecretNameKey: secretName,
-				networkFenceSecretNsKey:   secretNamespace,
-			},
+			Parameters:  params,
 		},
 	}
 	err := c.Create(ctx, nfc)
@@ -589,8 +603,9 @@ func CreateNetworkFenceClass(ctx context.Context, c client.Client, name, provisi
 
 // GetFenceCIDRs returns CIDRs to use for NetworkFence. It first checks env FENCE_CIDRS (comma-separated).
 // If unset, it waits up to fenceCIDRProbeTimeout for CSIAddonsNodes (matching provisioner) to have
-// status.networkFenceClientStatus for networkFenceClassName. Returns non-empty CIDRs if found, or nil
-// when the driver does not advertise GET_CLIENTS_TO_FENCE or status is never populated (caller should skip the test).
+// status.networkFenceClientStatus for networkFenceClassName. If still empty, falls back to node InternalIPs
+// (useful when driver does not advertise GET_CLIENTS_TO_FENCE, e.g. CephFS). Returns nil only when all
+// sources fail (caller should skip the test).
 func GetFenceCIDRs(ctx context.Context, c client.Client, provisioner, networkFenceClassName string) []string {
 	if s := os.Getenv("FENCE_CIDRS"); s != "" {
 		var cidrs []string
@@ -633,7 +648,27 @@ func GetFenceCIDRs(ctx context.Context, c client.Client, provisioner, networkFen
 		}
 		time.Sleep(pollInterval)
 	}
-	return nil
+	// Fallback: use node InternalIPs when driver does not advertise GET_CLIENTS_TO_FENCE (e.g. CephFS)
+	return GetNodeIPsForFencing(ctx, c)
+}
+
+// GetNodeIPsForFencing returns node InternalIPs as /32 CIDRs. Used as fallback when
+// FENCE_CIDRS is unset and CSIAddonsNode networkFenceClientStatus is empty.
+func GetNodeIPsForFencing(ctx context.Context, c client.Client) []string {
+	nodeList := &corev1.NodeList{}
+	if err := c.List(ctx, nodeList); err != nil {
+		return nil
+	}
+	var cidrs []string
+	for _, node := range nodeList.Items {
+		for _, addr := range node.Status.Addresses {
+			if addr.Type == corev1.NodeInternalIP && addr.Address != "" {
+				cidrs = append(cidrs, addr.Address+"/32")
+				break
+			}
+		}
+	}
+	return cidrs
 }
 
 // CreateNetworkFence creates a NetworkFence that blocks (Fenced) or unblocks (Unfenced) the given CIDRs.
@@ -675,6 +710,47 @@ func DeleteNetworkFence(ctx context.Context, c client.Client, nf *csiaddonsv1alp
 	}
 }
 
+// RemoveFinalizerFromNetworkFence patches the NetworkFence to remove its finalizer so it can be deleted.
+func RemoveFinalizerFromNetworkFence(ctx context.Context, c client.Client, nf *csiaddonsv1alpha1.NetworkFence) {
+	if nf == nil {
+		return
+	}
+	key := client.ObjectKeyFromObject(nf)
+	err := c.Get(ctx, key, nf)
+	if err != nil {
+		if errors.IsNotFound(err) {
+			return
+		}
+		Expect(err).NotTo(HaveOccurred())
+	}
+	if !containsString(nf.Finalizers, networkFenceFinalizer) {
+		return
+	}
+	nf.Finalizers = removeString(nf.Finalizers, networkFenceFinalizer)
+	Expect(c.Update(ctx, nf)).To(Succeed())
+}
+
+// DeleteNetworkFenceWithCleanup deletes the NetworkFence, waits for it to be gone, and removes
+// its finalizer if it is still present after the timeout.
+func DeleteNetworkFenceWithCleanup(ctx context.Context, c client.Client, nf *csiaddonsv1alpha1.NetworkFence) {
+	if nf == nil {
+		return
+	}
+	key := client.ObjectKeyFromObject(nf)
+	_ = c.Delete(ctx, nf)
+	deadline := time.Now().Add(cleanupWaitTimeout)
+	for time.Now().Before(deadline) {
+		err := c.Get(ctx, key, nf)
+		if errors.IsNotFound(err) {
+			return
+		}
+		time.Sleep(pollInterval)
+	}
+	if err := c.Get(ctx, key, nf); err == nil {
+		RemoveFinalizerFromNetworkFence(ctx, c, nf)
+	}
+}
+
 // DeleteNetworkFenceClass deletes a NetworkFenceClass.
 func DeleteNetworkFenceClass(ctx context.Context, c client.Client, nfc *csiaddonsv1alpha1.NetworkFenceClass) {
 	if nfc == nil {
@@ -683,5 +759,46 @@ func DeleteNetworkFenceClass(ctx context.Context, c client.Client, nfc *csiaddon
 	err := c.Delete(ctx, nfc)
 	if err != nil && !errors.IsNotFound(err) {
 		Expect(err).NotTo(HaveOccurred())
+	}
+}
+
+// RemoveFinalizerFromNetworkFenceClass patches the NetworkFenceClass to remove its finalizer.
+func RemoveFinalizerFromNetworkFenceClass(ctx context.Context, c client.Client, nfc *csiaddonsv1alpha1.NetworkFenceClass) {
+	if nfc == nil {
+		return
+	}
+	key := client.ObjectKeyFromObject(nfc)
+	err := c.Get(ctx, key, nfc)
+	if err != nil {
+		if errors.IsNotFound(err) {
+			return
+		}
+		Expect(err).NotTo(HaveOccurred())
+	}
+	if !containsString(nfc.Finalizers, networkFenceClassFinalizer) {
+		return
+	}
+	nfc.Finalizers = removeString(nfc.Finalizers, networkFenceClassFinalizer)
+	Expect(c.Update(ctx, nfc)).To(Succeed())
+}
+
+// DeleteNetworkFenceClassWithCleanup deletes the NetworkFenceClass, waits for it to be gone, and
+// removes its finalizer if it is still present after the timeout.
+func DeleteNetworkFenceClassWithCleanup(ctx context.Context, c client.Client, nfc *csiaddonsv1alpha1.NetworkFenceClass) {
+	if nfc == nil {
+		return
+	}
+	key := client.ObjectKeyFromObject(nfc)
+	_ = c.Delete(ctx, nfc)
+	deadline := time.Now().Add(cleanupWaitTimeout)
+	for time.Now().Before(deadline) {
+		err := c.Get(ctx, key, nfc)
+		if errors.IsNotFound(err) {
+			return
+		}
+		time.Sleep(pollInterval)
+	}
+	if err := c.Get(ctx, key, nfc); err == nil {
+		RemoveFinalizerFromNetworkFenceClass(ctx, c, nfc)
 	}
 }

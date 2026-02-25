@@ -125,6 +125,25 @@ if kubectl get crd volumereplicationclasses.replication.storage.openshift.io &>/
 fi
 
 # 3) NetworkFence and NetworkFenceClass created by L1-E-003 test
+# Remove finalizers if stuck (e.g. controller cannot reach driver after fence)
+remove_networkfence_finalizer() {
+	local name="$1"
+	if [[ "$DRY_RUN" == "true" ]]; then
+		echo "  [dry-run] would remove finalizer from NetworkFence $name"
+		return 0
+	fi
+	kubectl patch networkfence "$name" -p '{"metadata":{"finalizers":[]}}' --type=merge 2>/dev/null || true
+}
+
+remove_networkfenceclass_finalizer() {
+	local name="$1"
+	if [[ "$DRY_RUN" == "true" ]]; then
+		echo "  [dry-run] would remove finalizer from NetworkFenceClass $name"
+		return 0
+	fi
+	kubectl patch networkfenceclass "$name" -p '{"metadata":{"finalizers":[]}}' --type=merge 2>/dev/null || true
+}
+
 if kubectl get crd networkfences.csiaddons.openshift.io &>/dev/null; then
 	echo ""
 	echo "Cleaning test NetworkFences..."
@@ -134,6 +153,12 @@ if kubectl get crd networkfences.csiaddons.openshift.io &>/dev/null; then
 				echo "  [dry-run] would delete NetworkFence $nf"
 			else
 				kubectl delete networkfence "$nf" --ignore-not-found --timeout=30s 2>/dev/null || true
+				# Remove finalizer if still present (e.g. stuck in Terminating)
+				if kubectl get networkfence "$nf" &>/dev/null; then
+					echo "  NetworkFence $nf stuck, removing finalizer..."
+					remove_networkfence_finalizer "$nf"
+					kubectl delete networkfence "$nf" --ignore-not-found --timeout=15s 2>/dev/null || true
+				fi
 				echo "  Deleted NetworkFence $nf"
 			fi
 		fi
@@ -146,7 +171,13 @@ if kubectl get crd networkfenceclasses.csiaddons.openshift.io &>/dev/null; then
 			if [[ "$DRY_RUN" == "true" ]]; then
 				echo "  [dry-run] would delete NetworkFenceClass $nfc"
 			else
-				kubectl delete networkfenceclass "$nfc" --ignore-not-found --timeout=10s 2>/dev/null || true
+				kubectl delete networkfenceclass "$nfc" --ignore-not-found --timeout=30s 2>/dev/null || true
+				# Remove finalizer if still present (e.g. stuck in Terminating)
+				if kubectl get networkfenceclass "$nfc" &>/dev/null; then
+					echo "  NetworkFenceClass $nfc stuck, removing finalizer..."
+					remove_networkfenceclass_finalizer "$nfc"
+					kubectl delete networkfenceclass "$nfc" --ignore-not-found --timeout=15s 2>/dev/null || true
+				fi
 				echo "  Deleted NetworkFenceClass $nfc"
 			fi
 		fi

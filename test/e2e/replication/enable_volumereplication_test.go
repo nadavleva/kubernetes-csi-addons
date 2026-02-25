@@ -159,10 +159,10 @@ var _ = Describe("EnableVolumeReplication", func() {
 			By("Creating NetworkFenceClass " + nfcName + " (same provisioner and secret as VRC)")
 			nfc := CreateNetworkFenceClass(ctx, c, nfcName, env.Provisioner, secretName, secretNs)
 
-			By("Getting fence CIDRs (from FENCE_CIDRS env or CSIAddonsNode status)")
+			By("Getting fence CIDRs (from FENCE_CIDRS env, CSIAddonsNode status, or node InternalIPs)")
 			cidrs := GetFenceCIDRs(ctx, c, env.Provisioner, nfcName)
 			if len(cidrs) == 0 {
-				Skip("L1-E-003 requires FENCE_CIDRS (comma-separated CIDRs to fence) when the CSI driver does not advertise GET_CLIENTS_TO_FENCE or CSIAddonsNode has no networkFenceClientStatus. Set FENCE_CIDRS to the node/storage IP(s) to fence, e.g. FENCE_CIDRS=10.244.0.1/32")
+				Skip("L1-E-003 could not get CIDRs: set FENCE_CIDRS (comma-separated, e.g. FENCE_CIDRS=192.168.122.164/32) or ensure cluster has nodes with InternalIP")
 			}
 
 			nfName := "nf-fence-" + nsName
@@ -178,8 +178,8 @@ var _ = Describe("EnableVolumeReplication", func() {
 			DeferCleanup(func() {
 				cleanupCtx := context.Background()
 				DeleteVolumeReplicationWithCleanup(cleanupCtx, c, vr)
-				DeleteNetworkFence(cleanupCtx, c, nf)
-				DeleteNetworkFenceClass(cleanupCtx, c, nfc)
+				DeleteNetworkFenceWithCleanup(cleanupCtx, c, nf)
+				DeleteNetworkFenceClassWithCleanup(cleanupCtx, c, nfc)
 				DeleteVolumeReplicationClass(cleanupCtx, c, vrc)
 				DeletePVCWithCleanup(cleanupCtx, c, pvc)
 				DeleteNamespace(cleanupCtx, c, ns)
