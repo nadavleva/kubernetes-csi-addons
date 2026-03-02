@@ -12,6 +12,9 @@ When both `networkFenceClassName` and `driver` are specified `networkFenceClassN
 > to use `networkFenceClassName` along with a `NetworkFenceClass` instead.
 
 The creation of NetworkFence CR will add a network fence. To unfence the CIDRs, update the `fenceState` field to `Unfenced`. Deletion of the CR no longer triggers UnfenceClusterNetwork; the controller removes the finalizer and skips reconciliation.
+The `fenceState` field in the NetworkFence spec explicitly specifies the desired state for the CIDRs either
+`Fenced` or `Unfenced`. Setting `fenceState` to `Fenced` blocks access to the corresponding CIDR blocks, while
+setting it to `Unfenced` unblocks them.
 
 ## Fence Operation
 
@@ -21,6 +24,7 @@ kind: NetworkFence
 metadata:
   name: network-fence-sample
 spec:
+  fenceState: Fenced
   networkFenceClassName: network-fence-class
   cidrs:
     - 10.90.89.66/32
@@ -36,8 +40,24 @@ spec:
     key: value
 ```
 
-> **Note**: Creation of a NetworkFence CR blocks access to the corresponding CIDR block. To unblock, set `spec.fenceState: Unfenced`.
+## Unfence Operation
 
+To unfence the CIDRs, update the `fenceState` field to `Unfenced`:
+
+```yaml
+apiVersion: csiaddons.openshift.io/v1alpha1
+kind: NetworkFence
+metadata:
+  name: network-fence-sample
+spec:
+  fenceState: Unfenced
+  networkFenceClassName: network-fence-class
+  cidrs:
+    - 10.90.89.66/32
+    - 11.67.12.42/24
+```
+
+- `fenceState`: specifies the desired state for the CIDRs. Accepted values are `Fenced` and `Unfenced`. Defaults to `Fenced`.
 - `networkFenceClassName`: specifies the name of the NetworkFenceClass.
 - `driver`: specifies the name of storage provisioner.
 - `cidrs`: refers to the CIDR blocks on which the mentioned fence/unfence operation is to be performed.
