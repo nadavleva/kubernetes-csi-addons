@@ -24,12 +24,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/util/uuid"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -59,7 +60,7 @@ const (
 	networkFenceSecretNameKey = networkFenceParamPrefix + "networkfence-secret-name"
 	networkFenceSecretNsKey   = networkFenceParamPrefix + "networkfence-secret-namespace"
 	networkFencePollTimeout   = 120 * time.Second // for WaitForNetworkFenceResult
-	fenceCIDRProbeTimeout     = 30 * time.Second // wait for CSIAddonsNode CIDRs before skipping L1-E-003
+	fenceCIDRProbeTimeout     = 30 * time.Second  // wait for CSIAddonsNode CIDRs before skipping L1-E-003
 
 	// NetworkFence/NetworkFenceClass finalizers (must match internal/controller/csiaddons/networkfence*.go)
 	networkFenceFinalizer      = "csiaddons.openshift.io/network-fence"
@@ -126,6 +127,17 @@ func GetTestEnv() TestEnv {
 // UniqueNamespace returns a unique namespace name for e2e tests.
 func UniqueNamespace() string {
 	return fmt.Sprintf("e2e-replication-%s", uuid.NewUUID()[:8])
+}
+
+// SkipIfNotFullDR skips the current spec when DR1_CONTEXT and DR2_CONTEXT are not both set.
+// It logs the skip reason to GinkgoWriter so it appears in the test output.
+// Use for tests that require two clusters (e.g. L1-DIS-002, Full DR specs).
+func SkipIfNotFullDR(testID, description string) {
+	env := GetTestEnv()
+	if !env.FullDR {
+		_, _ = fmt.Fprintf(ginkgo.GinkgoWriter, "[%s] Skipping: %s (DR1_CONTEXT and DR2_CONTEXT must both be set)\n", testID, description)
+		ginkgo.Skip(fmt.Sprintf("%s requires DR1_CONTEXT and DR2_CONTEXT to be set", testID))
+	}
 }
 
 // CreateNamespace creates a namespace with the given name.

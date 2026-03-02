@@ -35,9 +35,7 @@ var _ = Describe("Full DR (two clusters)", func() {
 	BeforeEach(func() {
 		ctx = context.Background()
 		env = GetTestEnv()
-		if !env.FullDR {
-			Skip("Full DR tests require DR1_CONTEXT and DR2_CONTEXT to be set")
-		}
+		SkipIfNotFullDR("Full DR", "test requires two clusters")
 	})
 
 	Describe("Dual-cluster resource creation", func() {
