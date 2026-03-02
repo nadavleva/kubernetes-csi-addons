@@ -144,6 +144,56 @@ echo -e "\n=== NetworkFenceClasses ==="
 kubectl get networkfenceclass -A
 ```
 
+## Post-test recovery (L1-E-003)
+
+The L1-E-003 replication e2e test is currently skipped due to [ceph/ceph-csi#6142](https://github.com/ceph/ceph-csi/issues/6142): UnfenceClusterNetwork does not clear OSD blocklist entries, so the RBD mirror daemon stays unhealthy after unfence. **Waiting does not help** — recovery requires manual blocklist clear and rbd-mirror restart. If you run L1-E-003 manually or the cluster was fenced by another process, RBD mirroring may be left in an unhealthy state (`daemon health: WARNING`, `rbd_support module is not ready`). Use these steps:
+
+### 1. Verify fence is removed
+
+```bash
+kubectl get networkfence -A
+# Should be empty or the test's fence should be gone
+```
+
+### 2. Check RBD mirror pool status
+
+```bash
+# Replace <pool> with your replication pool (e.g. replicapool)
+kubectl -n rook-ceph exec deployment/rook-ceph-tools -- rbd mirror pool status <pool>
+```
+
+Look for `daemon health: WARNING` or `image health: WARNING`. If present, proceed with recovery.
+
+### 3. Clear OSD blocklist (if Ceph blocked the fenced node)
+
+```bash
+kubectl -n rook-ceph exec deployment/rook-ceph-tools -- ceph osd blocklist ls
+# If the fenced node IP appears, clear it:
+kubectl -n rook-ceph exec deployment/rook-ceph-tools -- ceph osd blocklist clear <blocked-ip>
+```
+
+### 4. Restart rbd-mirror daemon (if daemon health is WARNING)
+
+```bash
+# Rook: find the rbd-mirror deployment
+kubectl -n rook-ceph get deploy -l app=rbd-mirror
+kubectl -n rook-ceph rollout restart deployment/<rbd-mirror-deployment>
+```
+
+### 5. Re-apply mirror peer (if peer was lost)
+
+If `rbd mirror pool info <pool>` shows no peers or the peer is unhealthy:
+
+```bash
+# Create bootstrap token on primary, import on secondary (see Rook/Ceph docs)
+kubectl -n rook-ceph exec deployment/rook-ceph-tools -- rbd mirror pool peer bootstrap create <pool> --site-name primary
+# Import the token on the secondary cluster
+```
+
+### 6. Wait for recovery
+
+After unfence and any cleanup, allow 1–2 minutes for Ceph to re-establish connectivity. Re-check `rbd mirror pool status <pool>` until `daemon health: OK`.
+
 ## References
 
 - [networkfence.md](networkfence.md) — NetworkFence usage
