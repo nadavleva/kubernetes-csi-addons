@@ -11,7 +11,7 @@ When both `networkFenceClassName` and `driver` are specified `networkFenceClassN
 > **Note:** Specifying `driver`, `secret` and `parameters` inside `NetworkFence` is deprecated, users are encouraged
 > to use `networkFenceClassName` along with a `NetworkFenceClass` instead.
 
-The creation of NetworkFence CR will add a network fence, and its deletion will undo the operation.
+The creation of NetworkFence CR will add a network fence. To unfence the CIDRs, update the `fenceState` field to `Unfenced`. Deletion of the CR no longer triggers UnfenceClusterNetwork; the controller removes the finalizer and skips reconciliation.
 
 ## Fence Operation
 
@@ -36,7 +36,7 @@ spec:
     key: value
 ```
 
-> **Note**: Creation of a NetworkFence CR blocks access to the corresponding CIDR block; which is then unblocked the CR deletion.
+> **Note**: Creation of a NetworkFence CR blocks access to the corresponding CIDR block. To unblock, set `spec.fenceState: Unfenced`.
 
 - `networkFenceClassName`: specifies the name of the NetworkFenceClass.
 - `driver`: specifies the name of storage provisioner.

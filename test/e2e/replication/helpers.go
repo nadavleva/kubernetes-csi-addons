@@ -794,7 +794,28 @@ func WaitForNetworkFenceResult(ctx context.Context, c client.Client, nf *csiaddo
 		"NetworkFence %s should get status.result=%s (got %s)", nf.Name, result, nf.Status.Result)
 }
 
-// DeleteNetworkFence deletes a NetworkFence (unfence is performed by the controller on delete).
+// UnfenceNetworkFence sets fenceState to Unfenced to unblock the CIDRs. Deletion no longer
+// triggers UnfenceClusterNetwork; the controller requires an explicit fenceState: Unfenced update.
+func UnfenceNetworkFence(ctx context.Context, c client.Client, nf *csiaddonsv1alpha1.NetworkFence) {
+	if nf == nil {
+		return
+	}
+	key := client.ObjectKeyFromObject(nf)
+	if err := c.Get(ctx, key, nf); err != nil {
+		if errors.IsNotFound(err) {
+			return
+		}
+		Expect(err).NotTo(HaveOccurred())
+	}
+	if nf.Spec.FenceState == csiaddonsv1alpha1.Unfenced {
+		return // already unfenced
+	}
+	nf.Spec.FenceState = csiaddonsv1alpha1.Unfenced
+	Expect(c.Update(ctx, nf)).To(Succeed())
+	WaitForNetworkFenceResult(ctx, c, nf, csiaddonsv1alpha1.FencingOperationResultSucceeded)
+}
+
+// DeleteNetworkFence deletes a NetworkFence. Does not perform unfence; use UnfenceNetworkFence first.
 func DeleteNetworkFence(ctx context.Context, c client.Client, nf *csiaddonsv1alpha1.NetworkFence) {
 	if nf == nil {
 		return
@@ -825,13 +846,23 @@ func RemoveFinalizerFromNetworkFence(ctx context.Context, c client.Client, nf *c
 	Expect(c.Update(ctx, nf)).To(Succeed())
 }
 
-// DeleteNetworkFenceWithCleanup deletes the NetworkFence, waits for it to be gone, and removes
-// its finalizer if it is still present after the timeout.
+// DeleteNetworkFenceWithCleanup unfences the CIDRs (sets fenceState: Unfenced), then deletes the
+// NetworkFence. Deletion no longer triggers UnfenceClusterNetwork; unfence must be explicit.
 func DeleteNetworkFenceWithCleanup(ctx context.Context, c client.Client, nf *csiaddonsv1alpha1.NetworkFence) {
 	if nf == nil {
 		return
 	}
 	key := client.ObjectKeyFromObject(nf)
+	if err := c.Get(ctx, key, nf); err != nil {
+		if errors.IsNotFound(err) {
+			return
+		}
+		Expect(err).NotTo(HaveOccurred())
+	}
+	// Unfence first: deletion no longer triggers UnfenceClusterNetwork
+	if nf.Spec.FenceState == csiaddonsv1alpha1.Fenced {
+		UnfenceNetworkFence(ctx, c, nf)
+	}
 	_ = c.Delete(ctx, nf)
 	deadline := time.Now().Add(cleanupWaitTimeout)
 	for time.Now().Before(deadline) {

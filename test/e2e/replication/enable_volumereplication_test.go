@@ -135,8 +135,6 @@ var _ = Describe("EnableVolumeReplication", func() {
 
 	Describe("L1-E-003: Peer unreachable (NetworkFence)", func() {
 		It("L1-E-003 + L1-INFO-005: fence node → EnableVolumeReplication fails and GetVolumeReplicationInfo shows error; unfence → EnableVolumeReplication succeeds and GetVolumeReplicationInfo shows healthy", func() {
-			Skip("L1-E-003 skipped: NetworkFence leaves RBD mirror daemon unhealthy after unfence due to OSD blocklist entries. " +
-				"See https://github.com/ceph/ceph-csi/issues/6142 — re-enable when Ceph-CSI UnfenceClusterNetwork clears blocklist.")
 			By("Test case 1: Block storage node via NetworkFence; create VR and expect EnableVolumeReplication to fail; assert GetVolumeReplicationInfo (L1-INFO-005) shows error")
 			c := GetK8sClient()
 			By("Checking that NetworkFence and NetworkFenceClass CRDs are installed")
@@ -198,9 +196,9 @@ var _ = Describe("EnableVolumeReplication", func() {
 			Expect(hasVolumeReplicationErrorCondition(vr)).To(BeTrue(),
 				"GetVolumeReplicationInfo (L1-INFO-005): VR with fenced/peer unreachable must have error (message or degraded condition)")
 
-			By("Deleting NetworkFence to unfence the node")
-			DeleteNetworkFence(ctx, c, nf)
-			nf = nil // avoid double-delete in cleanup
+			By("Unfencing by setting fenceState to Unfenced")
+			UnfenceNetworkFence(ctx, c, nf)
+			// Cleanup will delete NF (already unfenced); NFC deleted after
 
 			By("Waiting for controller to retry and EnableVolumeReplication to succeed")
 			WaitForVolumeReplicationReplicatingOrCompleted(ctx, c, vr, func(v *replicationv1alpha1.VolumeReplication) {

@@ -146,7 +146,7 @@ kubectl get networkfenceclass -A
 
 ## Post-test recovery (L1-E-003)
 
-The L1-E-003 replication e2e test is currently skipped due to [ceph/ceph-csi#6142](https://github.com/ceph/ceph-csi/issues/6142): UnfenceClusterNetwork does not clear OSD blocklist entries, so the RBD mirror daemon stays unhealthy after unfence. **Waiting does not help** — recovery requires manual blocklist clear and rbd-mirror restart. If you run L1-E-003 manually or the cluster was fenced by another process, RBD mirroring may be left in an unhealthy state (`daemon health: WARNING`, `rbd_support module is not ready`). Use these steps:
+L1-E-003 unfences by setting `spec.fenceState: Unfenced` (deletion no longer triggers UnfenceClusterNetwork). Recovery typically takes ~2 minutes after unfence (RBD mirror reconnect, controller retry). If the cluster remains degraded or RBD mirroring stays unhealthy (`daemon health: WARNING`, `rbd_support module is not ready`), use these manual steps:
 
 ### 1. Verify fence is removed
 
