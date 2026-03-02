@@ -51,6 +51,10 @@ const (
 	pvcBindTimeout             = 120 * time.Second
 	cleanupWaitTimeout         = 45 * time.Second
 
+	// mirrorImageReadyDelay is the time to wait for rbd-mirror to create the mirror image on the
+	// secondary cluster after primary replication is enabled. Used by CreateSecondaryPVCFromPrimary.
+	mirrorImageReadyDelay = 15 * time.Second
+
 	// Finalizer names must match internal/controller/replication.storage/finalizers.go
 	volumeReplicationFinalizer = "replication.storage.openshift.io"
 	pvcReplicationFinalizer    = "replication.storage.openshift.io/pvc-protection"
@@ -212,6 +216,85 @@ func CreatePVC(ctx context.Context, c client.Client, namespace, name, storageCla
 	err = c.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, pvc)
 	Expect(err).NotTo(HaveOccurred())
 	return pvc
+}
+
+// CreateSecondaryPVCFromPrimary restores the secondary PVC from the primary for RBD mirroring.
+// It backs up the PV and PVC from the primary cluster, strips claimRef from the PV, and applies
+// both on the secondary cluster so the PVC binds to the mirror image created by rbd-mirror.
+// Call this after the primary VR has reached Replicating. Waits mirrorImageReadyDelay for the
+// rbd-mirror daemon to create the mirror image on the secondary cluster before creating PV/PVC.
+// Returns (pvcDR2, pvDR2). The caller must delete the PV on cleanup (after the PVC).
+func CreateSecondaryPVCFromPrimary(ctx context.Context, cPrimary, cSecondary client.Client, pvcPrimary *corev1.PersistentVolumeClaim, namespace, secondaryPVCName string, onPoll func(*corev1.PersistentVolumeClaim)) (*corev1.PersistentVolumeClaim, *corev1.PersistentVolume) {
+	// Wait for rbd-mirror to create the mirror image on the secondary cluster
+	time.Sleep(mirrorImageReadyDelay)
+
+	// Refresh primary PVC to ensure we have VolumeName
+	err := cPrimary.Get(ctx, client.ObjectKey{Namespace: pvcPrimary.Namespace, Name: pvcPrimary.Name}, pvcPrimary)
+	Expect(err).NotTo(HaveOccurred())
+	Expect(pvcPrimary.Spec.VolumeName).NotTo(BeEmpty(), "primary PVC must be bound (have volumeName)")
+
+	// Get the PV from the primary cluster
+	pvPrimary := &corev1.PersistentVolume{}
+	err = cPrimary.Get(ctx, client.ObjectKey{Name: pvcPrimary.Spec.VolumeName}, pvPrimary)
+	Expect(err).NotTo(HaveOccurred())
+
+	// Create PV for secondary: copy spec, remove claimRef, new name
+	pvSecondaryName := "pv-" + secondaryPVCName + "-" + string(uuid.NewUUID())[:8]
+	pvSecondary := &corev1.PersistentVolume{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: pvSecondaryName,
+		},
+		Spec: *pvPrimary.Spec.DeepCopy(),
+	}
+	pvSecondary.Spec.ClaimRef = nil
+
+	err = cSecondary.Create(ctx, pvSecondary)
+	Expect(err).NotTo(HaveOccurred())
+
+	// Create PVC for secondary: same spec as primary, volumeName to bind to our PV
+	storageClass := pvcPrimary.Spec.StorageClassName
+	if storageClass != nil && *storageClass == "" {
+		storageClass = nil
+	}
+	pvcSecondary := &corev1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      secondaryPVCName,
+			Namespace: namespace,
+		},
+		Spec: corev1.PersistentVolumeClaimSpec{
+			AccessModes:      pvcPrimary.Spec.AccessModes,
+			Resources:        pvcPrimary.Spec.Resources,
+			StorageClassName: storageClass,
+			VolumeName:       pvSecondaryName,
+		},
+	}
+	err = cSecondary.Create(ctx, pvcSecondary)
+	Expect(err).NotTo(HaveOccurred())
+
+	Eventually(func() bool {
+		err := cSecondary.Get(ctx, client.ObjectKey{Namespace: namespace, Name: secondaryPVCName}, pvcSecondary)
+		if err != nil {
+			return false
+		}
+		if onPoll != nil {
+			onPoll(pvcSecondary)
+		}
+		return pvcSecondary.Status.Phase == corev1.ClaimBound
+	}, pvcBindTimeout, pollInterval).Should(BeTrue(), "secondary PVC %s/%s should become Bound", namespace, secondaryPVCName)
+	err = cSecondary.Get(ctx, client.ObjectKey{Namespace: namespace, Name: secondaryPVCName}, pvcSecondary)
+	Expect(err).NotTo(HaveOccurred())
+	return pvcSecondary, pvSecondary
+}
+
+// DeletePV deletes a PV and ignores NotFound.
+func DeletePV(ctx context.Context, c client.Client, pv *corev1.PersistentVolume) {
+	if pv == nil {
+		return
+	}
+	err := c.Delete(ctx, pv)
+	if err != nil && !errors.IsNotFound(err) {
+		Expect(err).NotTo(HaveOccurred())
+	}
 }
 
 // FormatPVCStatus returns a one-line status for logging (e.g. phase=Pending).

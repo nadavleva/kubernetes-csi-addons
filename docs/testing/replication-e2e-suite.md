@@ -32,6 +32,8 @@ To preview what would be deleted without making changes:
 
 The script removes finalizers from VolumeReplications and PVCs in `e2e-replication-*` namespaces, deletes those resources plus any VolumeSnapshots, deletes the namespaces, and deletes test-created VolumeReplicationClasses (names starting with `vrc-snapshot-`, `vrc-journal-`, etc.).
 
+**Planned enhancement:** Create a failure report (PVC, VolumeReplication, VolumeReplicationGroup, events, pod logs from test namespaces and `REPLICATION_SECRET_NAMESPACE`) **before** cleanup on test failure, and store it under `Logs/<run-folder>/`. See [.github/ISSUE_TEMPLATE/replication-e2e-failure-report.md](../../.github/ISSUE_TEMPLATE/replication-e2e-failure-report.md) for the full issue description.
+
 ## Prerequisites
 
 - **Cluster**: KUBECONFIG pointing at a running Kubernetes cluster
@@ -134,7 +136,7 @@ The suite has **13 specs** covering **24 test cases**. Enable and GetVolumeRepli
 | L1-E-009 + L1-INFO-014       | 2 (Invalid time format, GetInfo error) | Invalid schedulingStartTime format returns error; GetVolumeReplicationInfo returns error state |
 | L1-INFO-008                  | 1                         | Non-existent volume returns error in VR status                              |
 | L1-DIS-001                   | 1                         | Disable active replication on primary; replication removed, volume writeable |
-| L1-DIS-002                   | 1                         | Disable active replication on secondary (requires DR1_CONTEXT and DR2_CONTEXT); replication stopped, secondary remains RO |
+| L1-DIS-002                   | 1                         | Disable active replication on secondary (requires DR1_CONTEXT and DR2_CONTEXT); secondary PVC restored from primary per RBD mirror backup/restore; replication stopped, secondary remains RO |
 | Full DR (two clusters)       | 1                         | Creates namespace on both DR1 and DR2, PVC and VR on DR1 only              |
 
 **Total: 13 specs, 24 test cases**. Tests that require two clusters (L1-DIS-002, Full DR) call `SkipIfNotFullDR` and are skipped with a log message when `DR1_CONTEXT` and `DR2_CONTEXT` are not both set. L1-E-003 (peer unreachable) is **currently skipped** because NetworkFence leaves the RBD mirror daemon unhealthy after unfence (see [ceph/ceph-csi#6142](https://github.com/ceph/ceph-csi/issues/6142)). UnfenceClusterNetwork does not clear OSD blocklist entries, so the rbd-mirror daemon cannot reconnect. **Waiting does not help** — recovery requires manual `ceph osd blocklist clear`, rbd-mirror restart, and possibly peer re-apply. Re-enable L1-E-003 when Ceph-CSI fixes UnfenceClusterNetwork to clear the blocklist. The test design: uses NetworkFenceClass and NetworkFence to block the storage node so EnableVolumeReplication fails; then deletes the NetworkFence (unfence) and asserts EnableVolumeReplication succeeds. **Before running**, the test checks that the **NetworkFence and NetworkFenceClass CRDs** are installed; if not, it skips. CIDRs come from env `FENCE_CIDRS`, CSIAddonsNode, or node InternalIPs. For **Ceph CSI (Rook)**, the test adds `clusterID` to NetworkFenceClass. **L1-E-003 cleanup order:** `DeferCleanup` deletes NetworkFence **before** VolumeReplication so unfence happens first on failure or interrupt. If the cluster is degraded after a run, see [Post-test recovery (L1-E-003)](../networkfence-troubleshooting.md#post-test-recovery-l1-e-003) (blocklist clear, rbd-mirror restart, peer re-apply).
