@@ -237,6 +237,7 @@ func CreateSecondaryPVCFromPrimary(ctx context.Context, cPrimary, cSecondary cli
 	pvPrimary := &corev1.PersistentVolume{}
 	err = cPrimary.Get(ctx, client.ObjectKey{Name: pvcPrimary.Spec.VolumeName}, pvPrimary)
 	Expect(err).NotTo(HaveOccurred())
+	fmt.Printf("[CreateSecondaryPVCFromPrimary] Primary PV CSI.VolumeHandle=%s\n", pvPrimary.Spec.CSI.VolumeHandle)
 
 	// Create PV for secondary: copy spec, remove claimRef, new name
 	pvSecondaryName := "pv-" + secondaryPVCName + "-" + string(uuid.NewUUID())[:8]
@@ -247,6 +248,7 @@ func CreateSecondaryPVCFromPrimary(ctx context.Context, cPrimary, cSecondary cli
 		Spec: *pvPrimary.Spec.DeepCopy(),
 	}
 	pvSecondary.Spec.ClaimRef = nil
+	fmt.Printf("[CreateSecondaryPVCFromPrimary] Secondary PV CSI.VolumeHandle=%s (should point to mirrored image)\n", pvSecondary.Spec.CSI.VolumeHandle)
 
 	err = cSecondary.Create(ctx, pvSecondary)
 	Expect(err).NotTo(HaveOccurred())
@@ -627,6 +629,8 @@ func DeleteVolumeReplicationClass(ctx context.Context, c client.Client, vrc *rep
 	if err != nil && !errors.IsNotFound(err) {
 		Expect(err).NotTo(HaveOccurred())
 	}
+	// VRC may be deleted immediately or have finalizers - don't wait for async deletion
+	// The cleanup script will handle any remaining VRCs after test suite
 }
 
 // DeletePVC deletes a PVC and ignores NotFound.
