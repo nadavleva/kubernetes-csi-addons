@@ -137,9 +137,27 @@ The suite has **13 specs** covering **24 test cases**. Enable and GetVolumeRepli
 | L1-INFO-008                  | 1                         | Non-existent volume returns error in VR status                              |
 | L1-DIS-001                   | 1                         | Disable active replication on primary; replication removed, volume writeable |
 | L1-DIS-002                   | 1                         | Disable active replication on secondary (requires DR1_CONTEXT and DR2_CONTEXT); secondary PVC restored from primary per RBD mirror backup/restore; replication stopped, secondary remains RO |
+| L1-DIS-003 + L1-DIS-004      | 2                         | Idempotent disable when no VR exists (previously disabled): primary and secondary, expect no error |
+| L1-DIS-005 + L1-DIS-006      | 2                         | Disable with peer unreachable (NetworkFence): force=false (graceful fail) and force=true (immediate disable) |
+| L1-DIS-009 + L1-DIS-010      | 2                         | Force disable active replication: primary and secondary, expect immediate disable |
+| L1-DIS-011 + L1-DIS-012      | 2                         | Force disable idempotent (no VR): primary and secondary, expect no error |
 | Full DR (two clusters)       | 1                         | Creates namespace on both DR1 and DR2, PVC and VR on DR1 only              |
 
-**Total: 13 specs, 24 test cases**. Tests that require two clusters (L1-DIS-002, Full DR) call `SkipIfNotFullDR` and are skipped with a log message when `DR1_CONTEXT` and `DR2_CONTEXT` are not both set.
+**Total: 23 specs, 44 test cases** (up from 13 specs, 24 test cases). Tests that require two clusters (L1-DIS-002, L1-DIS-004, L1-DIS-010, L1-DIS-012, Full DR) call `SkipIfNotFullDR` and are skipped with a log message when `DR1_CONTEXT` and `DR2_CONTEXT` are not both set. Tests requiring NetworkFence (L1-E-003, L1-DIS-005, L1-DIS-006) check `IsNetworkFenceSupportAvailable()` (cached at suite initialization) and skip gracefully if not supported.
+
+**Phase 2 Implementation Notes:**
+
+**L1-DIS-003 & L1-DIS-004 (Idempotent disable):** Test disabling when no VR exists on primary/secondary. Expect graceful no-op behavior—controller does not create/delete resources when none exist.
+
+**L1-DIS-005 & L1-DIS-006 (Peer unreachable):** Use NetworkFence to simulate peer unavailability (same infrastructure as L1-E-003). L1-DIS-005 (force=false) tests graceful handling of unreachable peer during disable. L1-DIS-006 (force=true) tests immediate disable with split-brain warnings. Both rely on cached `IsNetworkFenceSupportAvailable()` for graceful skips.
+
+**L1-DIS-009 & L1-DIS-010 (Force disable active):** Mirror L1-DIS-001 & L1-DIS-002 but add force parameter behavior validation. Test immediate disable on healthy peer without waiting for synchronization.
+
+**L1-DIS-011 & L1-DIS-012 (Force disable idempotent):** Test force disable when no VR exists (previously disabled, force=true). Expect same idempotent behavior as L1-DIS-003/004 but validate force parameter handling.
+
+**Not Implemented (Noted in matrix):**
+- L1-DIS-007 & L1-DIS-008 (Array unreachable): Requires storage array failure simulation (not supported in current K8s CSI infrastructure)
+- L1-DIS-013, L1-DIS-014, L1-DIS-015: Extended storage failure scenarios (future enhancement)
 
 **L1-E-003 (peer unreachable):** Uses NetworkFenceClass and NetworkFence to block the storage node so EnableVolumeReplication fails; then sets `spec.fenceState: Unfenced` to unfence (deletion no longer triggers UnfenceClusterNetwork). Recovery may take ~2 minutes after unfence (RBD mirror reconnect, controller retry). The test checks that the **driver supports NetworkFence** using a **cached capability check** performed once at BeforeSuite initialization (see [NetworkFence capability detection](#networkfence-capability-detection) below); if not supported, it skips gracefully. CIDRs come from env `FENCE_CIDRS`, CSIAddonsNode, or node InternalIPs. For **Ceph CSI (Rook)**, the test adds `clusterID` to NetworkFenceClass. **L1-E-003 cleanup:** `DeleteNetworkFenceWithCleanup` unfences first (sets fenceState Unfenced), then deletes the NetworkFence, so CIDRs are unblocked before VR/PVC cleanup even on failure or interrupt.
 
