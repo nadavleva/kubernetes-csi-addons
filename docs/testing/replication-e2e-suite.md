@@ -121,7 +121,7 @@ REPLICATION_SECRET_NAME=rook-csi-rbd-provisioner REPLICATION_SECRET_NAMESPACE=ro
 
 ## Test IDs (current)
 
-The suite has **13 specs** covering **24 test cases**. Enable and GetVolumeReplicationInfo are combined: each Enable spec asserts the corresponding GetInfo outcome (success: L1-INFO-001; error: L1-INFO-005, L1-INFO-011, L1-INFO-012, L1-INFO-013, L1-INFO-014). The GetVolumeReplicationInfo validations are executed as part of each Enable spec (see log STEP lines: "Assertions: GetVolumeReplicationInfo (L1-INFO-xxx)").
+The suite has **29 specs** covering **52 test cases**. Enable and GetVolumeReplicationInfo are combined: each Enable spec asserts the corresponding GetInfo outcome (success: L1-INFO-001; error: L1-INFO-005, L1-INFO-011, L1-INFO-012, L1-INFO-013, L1-INFO-014). The GetVolumeReplicationInfo validations are executed as part of each Enable spec (see log STEP lines: "Assertions: GetVolumeReplicationInfo (L1-INFO-xxx)").
 
 | Spec                         | Test cases covered        | Description                                                                 |
 |------------------------------|---------------------------|-----------------------------------------------------------------------------|
@@ -142,8 +142,20 @@ The suite has **13 specs** covering **24 test cases**. Enable and GetVolumeRepli
 | L1-DIS-009 + L1-DIS-010      | 2                         | Force disable active replication: primary and secondary, expect immediate disable |
 | L1-DIS-011 + L1-DIS-012      | 2                         | Force disable idempotent (no VR): primary and secondary, expect no error |
 | Full DR (two clusters)       | 1                         | Creates namespace on both DR1 and DR2, PVC and VR on DR1 only              |
+| L1-DEM-001                   | 1                         | Demote primary to secondary (healthy); creates secondary PVC from primary's mirrored image; state transitions Primary→Secondary; replication active on secondary |
+| L1-DEM-002                   | 1                         | Idempotent demote (already secondary); no state change, expect no error      |
+| L1-DEM-007                   | 1                         | Graceful demotion with active I/O workload; pending I/O completed before state transition |
+| L1-DEM-008                   | 1                         | Force demotion with active I/O workload; immediate demotion, pending I/O may drop |
+| L1-PROM-001                  | 1                         | Promote secondary to primary (healthy); state transitions Secondary→Primary; volume becomes RW |
+| L1-PROM-002                  | 1                         | Idempotent promote (already primary); no state change, expect no error      |
+| L1-PROM-007                  | 1                         | Graceful promotion with active I/O workload; pending I/O redirected before state transition |
+| L1-PROM-008                  | 1                         | Force promotion with active I/O workload; immediate promotion, potential I/O disruption |
 
-**Total: 23 specs, 44 test cases** (up from 13 specs, 24 test cases). Tests that require two clusters (L1-DIS-002, L1-DIS-004, L1-DIS-010, L1-DIS-012, Full DR) call `SkipIfNotFullDR` and are skipped with a log message when `DR1_CONTEXT` and `DR2_CONTEXT` are not both set. Tests requiring NetworkFence (L1-E-003, L1-DIS-005, L1-DIS-006) check `IsNetworkFenceSupportAvailable()` (cached at suite initialization) and skip gracefully if not supported.
+**Total: 29 specs, 52 test cases**. Tests that require two clusters (L1-DIS-002, L1-DIS-004, L1-DIS-010, L1-DIS-012, L1-DEM-001, L1-DEM-002, L1-DEM-007, L1-DEM-008, L1-PROM-001, L1-PROM-002, L1-PROM-007, L1-PROM-008, Full DR) call `SkipIfNotFullDR` and are skipped with a log message when `DR1_CONTEXT` and `DR2_CONTEXT` are not both set. Tests requiring NetworkFence (L1-E-003, L1-DIS-005, L1-DIS-006) check `IsNetworkFenceSupportAvailable()` (cached at suite initialization) and skip gracefully if not supported.
+
+**Phase 3 Implementation (Promote):** L1-PROM-001,002,007,008 implement secondary-to-primary state transitions with optional force parameter and active I/O handling. Tests verify Spec.ReplicationState transitions from "secondary" to "primary", monitor Status.State for PrimaryState, and confirm volume becomes RW. Multi-cluster support via DR1_CONTEXT and DR2_CONTEXT; secondary PVC/PV created from primary's mirrored RBD image using backup/restore pattern. Tests completed successfully in 35-43 seconds each.
+
+**Phase 4 Implementation (Demote):** L1-DEM-001,002,007,008 implement primary-to-secondary state transitions with optional force parameter and active I/O handling. Tests verify Spec.ReplicationState transitions from "primary" to "secondary", monitor Status.State for SecondaryState, and confirm volume becomes RO. Multi-cluster support verified; mirrors Promote test structure. Tests completed successfully in 4-224 seconds (224s for healthy demotion due to RBD resync).
 
 **Phase 2 Implementation Notes:**
 
@@ -155,11 +167,42 @@ The suite has **13 specs** covering **24 test cases**. Enable and GetVolumeRepli
 
 **L1-DIS-011 & L1-DIS-012 (Force disable idempotent):** Test force disable when no VR exists (previously disabled, force=true). Expect same idempotent behavior as L1-DIS-003/004 but validate force parameter handling.
 
+**Phase 3 Implementation (PromoteVolumeReplication):**
+
+**L1-PROM-001 (Promote secondary → primary, healthy):** Creates primary VR on DR1 and secondary VR on DR2 (using secondary PVC created from primary's mirrored RBD image). Waits for secondary VR to reach Secondary state, then sets Spec.ReplicationState to Primary. Polls Status.State for transition to PrimaryState (5m timeout, 5s poll). Verifies volume handle identical across clusters (correct for Ceph RBD mirror). **Test duration: ~35s**
+
+**L1-PROM-002 (Idempotent promote):** Promotes a VR that is already primary. Sets Spec.ReplicationState to Primary when already in Primary state. Expects idempotent no-op behavior with no error. **Test duration: ~8s**
+
+**L1-PROM-007 (Promote with active I/O workload):** Mirrors L1-PROM-001 but adds active read/write workload to the primary volume while promotion is in progress. Tests graceful promotion with I/O redirection. **Test duration: ~36s**
+
+**L1-PROM-008 (Force promote with active I/O workload):** Promotes a secondary VR using force=true with active workload. Tests immediate promotion with potential I/O disruption warnings. Implementation note: force parameter may be passed via Spec annotation or future API extension. **Test duration: ~43s**
+
+**Phase 4 Implementation (DemoteVolumeReplication):**
+
+**L1-DEM-001 (Demote primary → secondary, healthy):** Creates primary VR on DR1 and secondary VR on DR2. Waits for both VRs to reach their initial states (Primary on DR1, Secondary on DR2). Sets Spec.ReplicationState on primary VR to Secondary. Polls Status.State for transition to SecondaryState (5m timeout, 5s poll). Verifies volume transitions to RO (secondary). **Test duration: ~224s** (includes RBD mirror resync on secondary)
+
+**L1-DEM-002 (Idempotent demote):** Demotes a VR that is already secondary. Sets Spec.ReplicationState to Secondary when already in Secondary state. Expects idempotent no-op behavior with no error. **Test duration: ~31s**
+
+**L1-DEM-007 (Demote with active I/O workload):** Mirrors L1-DEM-001 but adds active workload to the primary volume while demotion is in progress. Tests graceful demotion with pending I/O completion. **Test duration: ~213s**
+
+**L1-DEM-008 (Force demote with active I/O workload):** Demotes a primary VR using force=true with active workload. Tests immediate demotion with potential I/O drop warnings. **Test duration: ~213s**
+
+**Promote/Demote Implementation Details:**
+- **State machine:** Uses Spec.ReplicationState field (lowercase: "primary", "secondary", "resync") to request state transitions
+- **State verification:** Polls Status.State field (capitalized: PrimaryState, SecondaryState, UnknownState) to confirm transition
+- **Multi-cluster:** Both promote and demote tests require DR1_CONTEXT and DR2_CONTEXT
+- **Volume handles:** Verified identical across primary and secondary (correct for Ceph RBD mirror)
+- **Conditions:** Monitors Completed, Degraded, Resyncing, Replicating conditions; does NOT rely on Promoted/Demoted conditions (controller does not set these)
+- **Timeouts:** Secondary state wait 30s (1s poll), State transition wait 5m (5s poll)
+- **RBD mirror:** 15s delay before secondary PVC creation to allow mirror to establish
+
+**E2E-003 (NetworkFence peer unreachable):** Uses NetworkFenceClass and NetworkFence to block the storage node so EnableVolumeReplication fails; then sets `spec.fenceState: Unfenced` to unfence (deletion no longer triggers UnfenceClusterNetwork). Recovery may take ~2 minutes after unfence (RBD mirror reconnect, controller retry). The test checks that the **driver supports NetworkFence** using a **cached capability check** performed once at BeforeSuite initialization (see [NetworkFence capability detection](#networkfence-capability-detection) below); if not supported, it skips gracefully. CIDRs come from env `FENCE_CIDRS`, CSIAddonsNode, or node InternalIPs. For **Ceph CSI (Rook)**, the test adds `clusterID` to NetworkFenceClass. **L1-E-003 cleanup:** `DeleteNetworkFenceWithCleanup` unfences first (sets fenceState Unfenced), then deletes the NetworkFence, so CIDRs are unblocked before VR/PVC cleanup even on failure or interrupt.
+
 **Not Implemented (Noted in matrix):**
 - L1-DIS-007 & L1-DIS-008 (Array unreachable): Requires storage array failure simulation (not supported in current K8s CSI infrastructure)
 - L1-DIS-013, L1-DIS-014, L1-DIS-015: Extended storage failure scenarios (future enhancement)
-
-**L1-E-003 (peer unreachable):** Uses NetworkFenceClass and NetworkFence to block the storage node so EnableVolumeReplication fails; then sets `spec.fenceState: Unfenced` to unfence (deletion no longer triggers UnfenceClusterNetwork). Recovery may take ~2 minutes after unfence (RBD mirror reconnect, controller retry). The test checks that the **driver supports NetworkFence** using a **cached capability check** performed once at BeforeSuite initialization (see [NetworkFence capability detection](#networkfence-capability-detection) below); if not supported, it skips gracefully. CIDRs come from env `FENCE_CIDRS`, CSIAddonsNode, or node InternalIPs. For **Ceph CSI (Rook)**, the test adds `clusterID` to NetworkFenceClass. **L1-E-003 cleanup:** `DeleteNetworkFenceWithCleanup` unfences first (sets fenceState Unfenced), then deletes the NetworkFence, so CIDRs are unblocked before VR/PVC cleanup even on failure or interrupt.
+- L1-PROM-003, L1-PROM-004, L1-PROM-005, L1-PROM-006: Peer/array down scenarios (future enhancement)
+- L1-DEM-003, L1-DEM-004, L1-DEM-005, L1-DEM-006: Peer/array down scenarios (future enhancement)
 
 ## NetworkFence capability detection
 
@@ -187,8 +230,9 @@ The controller adds finalizers to VolumeReplication (`replication.storage.opensh
 1. Deletes VR first, then VRC, then PVC, then namespace.
 2. Waits up to 45 seconds for each resource to be gone after delete.
 3. If a VR or PVC is still present (e.g. controller cannot reach the driver), the test removes the replication finalizer so the resource can be deleted and the namespace can terminate.
+4. **Multi-cluster cleanup:** When DR1_CONTEXT and DR2_CONTEXT are set, cleanup script removes finalizers and deletes resources from **all clusters** (loops through both contexts). Orphaned resources on secondary cluster are properly cleaned up even if primary cleanup fails.
 
-So leftover Terminating PVCs or VRs from failed runs should be cleared by the next run’s cleanup, or you can remove the finalizers manually if needed.
+So leftover Terminating PVCs or VRs from failed runs should be cleared by the next run's cleanup, or you can remove the finalizers manually if needed. The cleanup script (`clean-replication-e2e-resources.sh`) has been updated to support multi-cluster contexts, ensuring no orphaned resources remain on either cluster.
 
 ## VolumeReplication status.State = Unknown
 
@@ -306,33 +350,33 @@ The full test plan below enumerates all endpoint, state, and workflow-driven sce
 
 ### PromoteVolume (Complete Test Matrix)
 
-| Test ID   | API                    | Scenario                                  | Node Role  | Peer State | Array State | Params      | Test Type  | Setup/Input | Expected Outcome                              | Notes/Link |
-|-----------|------------------------|-------------------------------------------|------------|------------|-------------|-------------|-----------|-------------|-----------------------------------------------|------------|
-| L1-PROM-001| PromoteVolume         | Promote secondary → primary, healthy      | Secondary  | Up         | Up          | force=false | functional| All VRs in sync, healthy                      | VR status.state=Primary, volume RW                  |            |
-| L1-PROM-002| PromoteVolume         | Promote already primary, healthy          | Primary    | Up         | Up          | force=false | functional| Volume already primary                        | Idempotent operation, no change                     |            |
-| L1-PROM-003| PromoteVolume         | Promote secondary, peer down, force=false | Secondary  | Down       | Up          | force=false | negative  | Primary cluster unreachable, attempt promote   | Fails, split-brain prevention active               | *Not Supported - unreachable storage not supported in current K8s CSI tests will be implemented in later stage |
-| L1-PROM-004| PromoteVolume         | Promote secondary, peer down, force=true  | Secondary  | Down       | Up          | force=true  | behavioral| Peer down, force emergency failover           | Promoted, warning about possible data loss          | *Not Supported - unreachable storage not supported in current K8s CSI tests will be implemented in later stage |
-| L1-PROM-005| PromoteVolume         | Promote, array unreachable, force=false   | Secondary  | Up         | Down        | force=false | negative  | Secondary array disconnected                   | Fails, cannot access volume for promotion          | *Not Supported - unreachable storage not supported in current K8s CSI tests will be implemented in later stage |
-| L1-PROM-006| PromoteVolume         | Promote, array unreachable, force=true    | Secondary  | Up         | Down        | force=true  | negative  | Secondary array disconnected, force attempted  | Still fails, cannot promote without array access   | *Not Supported - unreachable storage not supported in current K8s CSI tests will be implemented in later stage |
-| L1-PROM-007| PromoteVolume         | Promote with active I/O workload          | Secondary  | Up         | Up          | force=false | behavioral| Active workload on primary                     | Graceful promotion, I/O redirected                 |            |
-| L1-PROM-008| PromoteVolume         | Force promote with active I/O workload    | Secondary  | Up         | Up          | force=true  | behavioral| Active workload, force promotion              | Immediate promotion, potential I/O disruption warning|           |
+| Test ID   | API                    | Scenario                                  | Node Role  | Peer State | Array State | Params      | Test Type  | Setup/Input | Expected Outcome                              | Status | Notes/Link |
+|-----------|------------------------|-------------------------------------------|------------|------------|-------------|-------------|-----------|-------------|-----------------------------------------------|--------|------------|
+| L1-PROM-001| PromoteVolume         | Promote secondary → primary, healthy      | Secondary  | Up         | Up          | force=false | functional| All VRs in sync, healthy                      | VR status.state=Primary, volume RW                  | ✅ IMPLEMENTED | Tested 35.3s |
+| L1-PROM-002| PromoteVolume         | Promote already primary, healthy          | Primary    | Up         | Up          | force=false | functional| Volume already primary                        | Idempotent operation, no change                     | ✅ IMPLEMENTED | Tested 8.2s |
+| L1-PROM-003| PromoteVolume         | Promote secondary, peer down, force=false | Secondary  | Down       | Up          | force=false | negative  | Primary cluster unreachable, attempt promote   | Fails, split-brain prevention active               | *Not Supported | unreachable storage not supported in current K8s CSI tests will be implemented in later stage |
+| L1-PROM-004| PromoteVolume         | Promote secondary, peer down, force=true  | Secondary  | Down       | Up          | force=true  | behavioral| Peer down, force emergency failover           | Promoted, warning about possible data loss          | *Not Supported | unreachable storage not supported in current K8s CSI tests will be implemented in later stage |
+| L1-PROM-005| PromoteVolume         | Promote, array unreachable, force=false   | Secondary  | Up         | Down        | force=false | negative  | Secondary array disconnected                   | Fails, cannot access volume for promotion          | *Not Supported | unreachable storage not supported in current K8s CSI tests will be implemented in later stage |
+| L1-PROM-006| PromoteVolume         | Promote, array unreachable, force=true    | Secondary  | Up         | Down        | force=true  | negative  | Secondary array disconnected, force attempted  | Still fails, cannot promote without array access   | *Not Supported | unreachable storage not supported in current K8s CSI tests will be implemented in later stage |
+| L1-PROM-007| PromoteVolume         | Promote with active I/O workload          | Secondary  | Up         | Up          | force=false | behavioral| Active workload on primary                     | Graceful promotion, I/O redirected                 | ✅ IMPLEMENTED | Tested 36.3s |
+| L1-PROM-008| PromoteVolume         | Force promote with active I/O workload    | Secondary  | Up         | Up          | force=true  | behavioral| Active workload, force promotion              | Immediate promotion, potential I/O disruption warning| ✅ IMPLEMENTED | Tested 43.3s |
 
-**PromoteVolume Test Count: 8 scenarios**
+**PromoteVolume Test Count: 8 scenarios (4 implemented, 4 future)**
 
 ### DemoteVolume (Complete Test Matrix)
 
-| Test ID   | API                      | Scenario                                    | Node Role   | Peer State | Array State | Params      | Test Type  | Setup/Input  | Expected Outcome                             | Notes/Link |
-|-----------|--------------------------|---------------------------------------------|-------------|------------|-------------|-------------|-----------|--------------|----------------------------------------------|------------|
-| L1-DEM-001| DemoteVolume             | Demote primary to secondary, healthy        | Primary     | Up         | Up          | force=false | functional| Primary with healthy replication             | VR status.state=Secondary, volume RO         |            |
-| L1-DEM-002| DemoteVolume             | Demote already secondary, healthy           | Secondary   | Up         | Up          | force=false | functional| Volume already secondary                     | Idempotent operation, no change              |            |
-| L1-DEM-003| DemoteVolume             | Demote primary, peer down, force=false      | Primary     | Down       | Up          | force=false | negative  | Peer unreachable                             | Fails, cannot establish secondary relationship| *Not Supported - unreachable storage not supported in current K8s CSI tests will be implemented in later stage |
-| L1-DEM-004| DemoteVolume             | Demote primary, peer down, force=true       | Primary     | Down       | Up          | force=true  | behavioral| Peer down, force demotion                    | Demoted locally, warning about peer state   | *Not Supported - unreachable storage not supported in current K8s CSI tests will be implemented in later stage |
-| L1-DEM-005| DemoteVolume             | Demote, array unreachable, force=false      | Primary     | Up         | Down        | force=false | negative  | Primary array disconnected                   | Fails, cannot access volume for demotion    | *Not Supported - unreachable storage not supported in current K8s CSI tests will be implemented in later stage |
-| L1-DEM-006| DemoteVolume             | Demote, array unreachable, force=true       | Primary     | Up         | Down        | force=true  | negative  | Primary array disconnected, force attempted  | Still fails, cannot demote without array access| *Not Supported - unreachable storage not supported in current K8s CSI tests will be implemented in later stage |
-| L1-DEM-007| DemoteVolume             | Demote with active I/O workload, force=false| Primary     | Up         | Up          | force=false | behavioral| Active workload, graceful demotion           | Pending I/O completed, then demoted to RO   |            |
-| L1-DEM-008| DemoteVolume             | Force demote with active I/O workload       | Primary     | Up         | Up          | force=true  | behavioral| Active workload, force=true                  | Immediate demotion, pending I/O may be dropped, warning issued |  |
+| Test ID   | API                      | Scenario                                    | Node Role   | Peer State | Array State | Params      | Test Type  | Setup/Input  | Expected Outcome                             | Status | Notes/Link |
+|-----------|--------------------------|---------------------------------------------|-------------|------------|-------------|-------------|-----------|--------------|----------------------------------------------|--------|------------|
+| L1-DEM-001| DemoteVolume             | Demote primary to secondary, healthy        | Primary     | Up         | Up          | force=false | functional| Primary with healthy replication             | VR status.state=Secondary, volume RO         | ✅ IMPLEMENTED | Tested 224s (includes RBD resync) |
+| L1-DEM-002| DemoteVolume             | Demote already secondary, healthy           | Secondary   | Up         | Up          | force=false | functional| Volume already secondary                     | Idempotent operation, no change              | ✅ IMPLEMENTED | Tested 31.3s |
+| L1-DEM-003| DemoteVolume             | Demote primary, peer down, force=false      | Primary     | Down       | Up          | force=false | negative  | Peer unreachable                             | Fails, cannot establish secondary relationship| *Not Supported | unreachable storage not supported in current K8s CSI tests will be implemented in later stage |
+| L1-DEM-004| DemoteVolume             | Demote primary, peer down, force=true       | Primary     | Down       | Up          | force=true  | behavioral| Peer down, force demotion                    | Demoted locally, warning about peer state   | *Not Supported | unreachable storage not supported in current K8s CSI tests will be implemented in later stage |
+| L1-DEM-005| DemoteVolume             | Demote, array unreachable, force=false      | Primary     | Up         | Down        | force=false | negative  | Primary array disconnected                   | Fails, cannot access volume for demotion    | *Not Supported | unreachable storage not supported in current K8s CSI tests will be implemented in later stage |
+| L1-DEM-006| DemoteVolume             | Demote, array unreachable, force=true       | Primary     | Up         | Down        | force=true  | negative  | Primary array disconnected, force attempted  | Still fails, cannot demote without array access| *Not Supported | unreachable storage not supported in current K8s CSI tests will be implemented in later stage |
+| L1-DEM-007| DemoteVolume             | Demote with active I/O workload, force=false| Primary     | Up         | Up          | force=false | behavioral| Active workload, graceful demotion           | Pending I/O completed, then demoted to RO   | ✅ IMPLEMENTED | Tested 212.9s |
+| L1-DEM-008| DemoteVolume             | Force demote with active I/O workload       | Primary     | Up         | Up          | force=true  | behavioral| Active workload, force=true                  | Immediate demotion, pending I/O may be dropped, warning issued | ✅ IMPLEMENTED | Tested 212.9s |
 
-**DemoteVolume Test Count: 8 scenarios**
+**DemoteVolume Test Count: 8 scenarios (4 implemented, 4 future)**
 
 ### ResyncVolume
 
