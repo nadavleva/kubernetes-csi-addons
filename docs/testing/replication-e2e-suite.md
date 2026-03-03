@@ -139,7 +139,28 @@ The suite has **13 specs** covering **24 test cases**. Enable and GetVolumeRepli
 | L1-DIS-002                   | 1                         | Disable active replication on secondary (requires DR1_CONTEXT and DR2_CONTEXT); secondary PVC restored from primary per RBD mirror backup/restore; replication stopped, secondary remains RO |
 | Full DR (two clusters)       | 1                         | Creates namespace on both DR1 and DR2, PVC and VR on DR1 only              |
 
-**Total: 13 specs, 24 test cases**. Tests that require two clusters (L1-DIS-002, Full DR) call `SkipIfNotFullDR` and are skipped with a log message when `DR1_CONTEXT` and `DR2_CONTEXT` are not both set. **L1-E-003 (peer unreachable):** Uses NetworkFenceClass and NetworkFence to block the storage node so EnableVolumeReplication fails; then sets `spec.fenceState: Unfenced` to unfence (deletion no longer triggers UnfenceClusterNetwork). Recovery may take ~2 minutes after unfence (RBD mirror reconnect, controller retry). **Before running**, the test checks that the **driver supports NetworkFence** (CRDs installed and at least one CSIAddonsNode for the provisioner advertises `network_fence.NETWORK_FENCE` in `status.capabilities`); if not, it skips. CIDRs come from env `FENCE_CIDRS`, CSIAddonsNode, or node InternalIPs. For **Ceph CSI (Rook)**, the test adds `clusterID` to NetworkFenceClass. **L1-E-003 cleanup:** `DeleteNetworkFenceWithCleanup` unfences first (sets fenceState Unfenced), then deletes the NetworkFence, so CIDRs are unblocked before VR/PVC cleanup even on failure or interrupt.
+**Total: 13 specs, 24 test cases**. Tests that require two clusters (L1-DIS-002, Full DR) call `SkipIfNotFullDR` and are skipped with a log message when `DR1_CONTEXT` and `DR2_CONTEXT` are not both set.
+
+**L1-E-003 (peer unreachable):** Uses NetworkFenceClass and NetworkFence to block the storage node so EnableVolumeReplication fails; then sets `spec.fenceState: Unfenced` to unfence (deletion no longer triggers UnfenceClusterNetwork). Recovery may take ~2 minutes after unfence (RBD mirror reconnect, controller retry). The test checks that the **driver supports NetworkFence** using a **cached capability check** performed once at BeforeSuite initialization (see [NetworkFence capability detection](#networkfence-capability-detection) below); if not supported, it skips gracefully. CIDRs come from env `FENCE_CIDRS`, CSIAddonsNode, or node InternalIPs. For **Ceph CSI (Rook)**, the test adds `clusterID` to NetworkFenceClass. **L1-E-003 cleanup:** `DeleteNetworkFenceWithCleanup` unfences first (sets fenceState Unfenced), then deletes the NetworkFence, so CIDRs are unblocked before VR/PVC cleanup even on failure or interrupt.
+
+## NetworkFence capability detection
+
+**Optimization (as of this version):** NetworkFence capability detection is performed **once** at BeforeSuite initialization (after client creation) and cached for all tests. Previously, L1-E-003 called `HasNetworkFenceSupport()` on every run, which checked CRDs and CSIAddonsNode capabilities every time.
+
+**How it works:**
+1. At BeforeSuite, `HasNetworkFenceSupport()` is called with the detected provisioner name
+2. Result (bool) is cached in module-level variable `networkFenceSupportCached`
+3. Tests call `IsNetworkFenceSupportAvailable()` (defined in suite_test.go) to retrieve the cached result
+4. L1-E-003 and future NetworkFence-dependent tests skip gracefully if not available
+
+**Benefits:**
+- Single capability check per test run vs. per-test overhead
+- Cluster query reduced from O(n_tests) to O(1)
+- Cleaner test code: tests don't pass `ctx`, `client`, `provisioner` to capability check
+
+**Limitations:**
+- Cached result assumes provisioner does not change during test run (reasonable assumption for single-provisioner suites)
+- Multi-provisioner suites can call `HasNetworkFenceSupport()` directly for each provisioner if needed
 
 ## Cleanup and finalizers
 

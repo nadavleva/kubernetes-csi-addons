@@ -17,6 +17,7 @@ limitations under the License.
 package replication
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -44,13 +45,15 @@ const (
 )
 
 var (
-	cfg                *rest.Config
-	k8sClient          client.Client
-	k8sClientDR1       client.Client
-	k8sClientDR2       client.Client
-	useExistingCluster bool
-	dr1Context         string
-	dr2Context         string
+	cfg                            *rest.Config
+	k8sClient                      client.Client
+	k8sClientDR1                   client.Client
+	k8sClientDR2                   client.Client
+	useExistingCluster             bool
+	dr1Context                     string
+	dr2Context                     string
+	networkFenceSupportCached      *bool  // cached result of NetworkFence capability detection (nil = not yet checked)
+	networkFenceSupportProvisioner string // provisioner used for cached check
 )
 
 func TestReplicationE2E(t *testing.T) {
@@ -104,6 +107,15 @@ var _ = BeforeSuite(func() {
 	}
 
 	_, _ = fmt.Fprintf(GinkgoWriter, "[Replication E2E] BeforeSuite: ready\n")
+
+	// Detect NetworkFence support once at suite level for efficiency
+	// This is done after client creation so we can query the cluster
+	_, _ = fmt.Fprintf(GinkgoWriter, "[Replication E2E] BeforeSuite: detecting NetworkFence support\n")
+	testEnv := GetTestEnv()
+	isSupported := HasNetworkFenceSupport(context.Background(), k8sClient, testEnv.Provisioner)
+	networkFenceSupportCached = &isSupported
+	networkFenceSupportProvisioner = testEnv.Provisioner
+	_, _ = fmt.Fprintf(GinkgoWriter, "[Replication E2E] BeforeSuite: NetworkFence support = %v (provisioner=%q)\n", isSupported, testEnv.Provisioner)
 })
 
 // ReportAfterEach logs each spec's completion for progress visibility in logs.
@@ -209,3 +221,20 @@ func DR1Context() string { return dr1Context }
 
 // DR2Context returns the DR2 context name (empty if not set).
 func DR2Context() string { return dr2Context }
+
+// IsNetworkFenceSupportAvailable returns the cached result of NetworkFence capability detection.
+// The detection is performed once at BeforeSuite initialization and reused for all tests.
+// Returns true if NetworkFence and NetworkFenceClass CRDs are installed and the CSI driver
+// advertises network_fence.NETWORK_FENCE capability. Used by tests to skip NetworkFence-dependent
+// scenarios gracefully.
+//
+// Note: The cached result is specific to the provisioner detected at BeforeSuite time.
+// If the provisioner changes during test execution, the cached result may not be accurate.
+// For multi-provisioner test suites, call HasNetworkFenceSupport directly for each provisioner.
+func IsNetworkFenceSupportAvailable() bool {
+	if networkFenceSupportCached == nil {
+		// Should not happen if BeforeSuite ran correctly, but return false as safe default
+		return false
+	}
+	return *networkFenceSupportCached
+}
