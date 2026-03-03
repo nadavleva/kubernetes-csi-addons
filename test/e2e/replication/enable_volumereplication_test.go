@@ -137,9 +137,9 @@ var _ = Describe("EnableVolumeReplication", func() {
 		It("L1-E-003 + L1-INFO-005: fence node → EnableVolumeReplication fails and GetVolumeReplicationInfo shows error; unfence → EnableVolumeReplication succeeds and GetVolumeReplicationInfo shows healthy", func() {
 			By("Test case 1: Block storage node via NetworkFence; create VR and expect EnableVolumeReplication to fail; assert GetVolumeReplicationInfo (L1-INFO-005) shows error")
 			c := GetK8sClient()
-			By("Checking that NetworkFence and NetworkFenceClass CRDs are installed")
-			if !HasNetworkFenceCRDs(ctx, c) {
-				Skip("L1-E-003 requires NetworkFence and NetworkFenceClass CRDs to be installed (e.g. CSI-Addons controller with network fence support). Install the CRDs and redeploy the controller.")
+			By("Checking that the driver supports NetworkFence (CSIAddonsNode advertises network_fence.NETWORK_FENCE)")
+			if !HasNetworkFenceSupport(ctx, c, env.Provisioner) {
+				Skip("L1-E-003 requires NetworkFence and NetworkFenceClass CRDs to be installed and the CSI driver to advertise network_fence.NETWORK_FENCE in CSIAddonsNode status.capabilities. Install the CRDs and ensure the driver supports NetworkFence.")
 			}
 			nsName := UniqueNamespace()
 			By("Creating namespace " + nsName)

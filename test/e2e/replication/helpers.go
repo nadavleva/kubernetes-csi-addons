@@ -645,16 +645,19 @@ func DeleteNamespace(ctx context.Context, c client.Client, ns *corev1.Namespace)
 	}
 }
 
-// HasNetworkFenceCRDs returns true if the NetworkFence and NetworkFenceClass CRDs are installed
-// on the cluster (e.g. CSI-Addons controller with network fence support). Use before L1-E-003 to
-// skip when the CRDs are not available.
-func HasNetworkFenceCRDs(ctx context.Context, c client.Client) bool {
+// networkFenceCapability is the capability string advertised by CSIAddonsNode when the driver
+// supports NetworkFence (matches identity.Capability_NetworkFence_NETWORK_FENCE).
+const networkFenceCapability = "network_fence.NETWORK_FENCE"
+
+// HasNetworkFenceSupport returns true if (1) NetworkFence and NetworkFenceClass CRDs are installed,
+// and (2) at least one CSIAddonsNode for the given provisioner advertises network_fence.NETWORK_FENCE.
+// Use before L1-E-003 to skip when the driver does not support fencing.
+func HasNetworkFenceSupport(ctx context.Context, c client.Client, provisioner string) bool {
 	nfList := &csiaddonsv1alpha1.NetworkFenceList{}
 	if err := c.List(ctx, nfList); err != nil {
 		if errors.IsNotFound(err) || meta.IsNoMatchError(err) {
 			return false
 		}
-		// Other errors (e.g. no RBAC) also mean we cannot run the test
 		return false
 	}
 	nfcList := &csiaddonsv1alpha1.NetworkFenceClassList{}
@@ -664,7 +667,26 @@ func HasNetworkFenceCRDs(ctx context.Context, c client.Client) bool {
 		}
 		return false
 	}
-	return true
+	// Check driver advertises NETWORK_FENCE capability (CSIAddonsNode status.capabilities)
+	list := &csiaddonsv1alpha1.CSIAddonsNodeList{}
+	if err := c.List(ctx, list); err != nil {
+		return false
+	}
+	for i := range list.Items {
+		node := &list.Items[i]
+		if node.Spec.Driver.Name != provisioner {
+			continue
+		}
+		if node.Status.State != csiaddonsv1alpha1.CSIAddonsNodeStateConnected {
+			continue
+		}
+		for _, cap := range node.Status.Capabilities {
+			if cap == networkFenceCapability {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // CreateNetworkFenceClass creates a NetworkFenceClass with the given provisioner and secret ref.
