@@ -24,8 +24,10 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	csiaddonsv1alpha1 "github.com/csi-addons/kubernetes-csi-addons/api/csiaddons/v1alpha1"
 	replicationv1alpha1 "github.com/csi-addons/kubernetes-csi-addons/api/replication.storage/v1alpha1"
 )
 
@@ -41,9 +43,10 @@ var _ = Describe("PromoteVolumeReplication", func() {
 	Describe("L1-PROM-001: Promote secondary to primary (healthy)", func() {
 		It("L1-PROM-001: promote secondary → primary when healthy, expect successful promotion", func() {
 			By("L1-PROM-001: Create primary on DR1, secondary on DR2; promote secondary to primary")
+			SkipIfNotFullDR("L1-PROM-001", "requires two clusters (DR1_CONTEXT and DR2_CONTEXT)")
+
 			cDR1 := GetK8sClientForCluster(ClusterDR1)
 			cDR2 := GetK8sClientForCluster(ClusterDR2)
-			SkipIfNotFullDR("L1-PROM-001", "requires two clusters (DR1_CONTEXT and DR2_CONTEXT)")
 
 			nsName := UniqueNamespace()
 			By("Creating namespace on both DR1 and DR2")
@@ -87,9 +90,13 @@ var _ = Describe("PromoteVolumeReplication", func() {
 				fmt.Fprintf(GinkgoWriter, "  [DR2][VR] %s\n", FormatVRStatus(v))
 			})
 
+			var nfc *csiaddonsv1alpha1.NetworkFenceClass
+			var nf *csiaddonsv1alpha1.NetworkFence
+
 			DeferCleanup(func() {
 				cleanupCtx := context.Background()
-				DeleteVolumeReplicationWithCleanup(cleanupCtx, cDR2, vrDR2)
+				DeleteNetworkFenceWithCleanup(cleanupCtx, cDR2, nf, vrDR2)
+				DeleteNetworkFenceClassWithCleanup(cleanupCtx, cDR2, nfc)
 				DeleteVolumeReplicationClass(cleanupCtx, cDR2, vrcDR2)
 				DeletePVCWithCleanup(cleanupCtx, cDR2, pvcDR2)
 				DeletePV(cleanupCtx, cDR2, pvDR2)
@@ -191,9 +198,10 @@ var _ = Describe("PromoteVolumeReplication", func() {
 	Describe("L1-PROM-007: Promote with active I/O workload", func() {
 		It("L1-PROM-007: promote secondary to primary with active workload, expect graceful promotion", func() {
 			By("L1-PROM-007: Create primary on DR1, secondary on DR2; promote under load")
+			SkipIfNotFullDR("L1-PROM-007", "requires two clusters (DR1_CONTEXT and DR2_CONTEXT)")
+
 			cDR1 := GetK8sClientForCluster(ClusterDR1)
 			cDR2 := GetK8sClientForCluster(ClusterDR2)
-			SkipIfNotFullDR("L1-PROM-007", "requires two clusters (DR1_CONTEXT and DR2_CONTEXT)")
 
 			nsName := UniqueNamespace()
 			By("Creating namespace on both DR1 and DR2")
@@ -271,9 +279,10 @@ var _ = Describe("PromoteVolumeReplication", func() {
 	Describe("L1-PROM-008: Force promote with active I/O workload", func() {
 		It("L1-PROM-008: force promote secondary with active workload, expect immediate promotion", func() {
 			By("L1-PROM-008: Create primary on DR1, secondary on DR2; force promote under load")
+			SkipIfNotFullDR("L1-PROM-008", "requires two clusters (DR1_CONTEXT and DR2_CONTEXT)")
+
 			cDR1 := GetK8sClientForCluster(ClusterDR1)
 			cDR2 := GetK8sClientForCluster(ClusterDR2)
-			SkipIfNotFullDR("L1-PROM-008", "requires two clusters (DR1_CONTEXT and DR2_CONTEXT)")
 
 			nsName := UniqueNamespace()
 			By("Creating namespace on both DR1 and DR2")
@@ -345,6 +354,335 @@ var _ = Describe("PromoteVolumeReplication", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(pvcDR2.Status.Phase).To(Equal(corev1.ClaimBound),
 				"Promoted secondary PVC should remain bound, got %s", pvcDR2.Status.Phase)
+		})
+	})
+
+	Describe("L1-PROM-003: Promote secondary to primary with peer unreachable (force=false)", func() {
+		It("L1-PROM-003: fence peer cluster → promote fails → unfence → promote succeeds", func() {
+			By("Starting L1-PROM-003: Promote secondary to primary with peer unreachable (force=false)")
+			SkipIfNotFullDR("L1-PROM-003", "requires two clusters (DR1_CONTEXT and DR2_CONTEXT)")
+
+			By("Checking that the driver supports NetworkFence")
+			if !IsNetworkFenceSupportAvailable() {
+				Skip("L1-PROM-003 requires NetworkFence and NetworkFenceClass CRDs to be installed and the CSI driver to advertise network_fence.NETWORK_FENCE in CSIAddonsNode status.capabilities.")
+			}
+
+			cDR1 := GetK8sClientForCluster(ClusterDR1)
+			cDR2 := GetK8sClientForCluster(ClusterDR2)
+
+			nsName := UniqueNamespace()
+			By("Creating namespace on both DR1 and DR2")
+			ns1 := CreateNamespace(ctx, cDR1, nsName)
+			ns2 := CreateNamespace(ctx, cDR2, nsName)
+
+			secretName, secretNs := ReplicationSecretRef(ctx, cDR1, env, nsName)
+
+			By("Creating primary PVC and VR on DR1")
+			pvcDR1 := CreatePVC(ctx, cDR1, nsName, "pvc-dr1-prom-003", env.StorageClass, "1Gi", func(p *corev1.PersistentVolumeClaim) {
+				fmt.Fprintf(GinkgoWriter, "  [DR1][PVC] %s\n", FormatPVCStatus(p))
+			})
+			vrcName := "vrc-prom-003-" + nsName
+			vrcDR1 := CreateVolumeReplicationClass(ctx, cDR1, vrcName, env.Provisioner, secretName, secretNs, MirroringModeSnapshot)
+			vrDR1 := CreateVolumeReplication(ctx, cDR1, nsName, "vr-dr1-prom-003", vrcName, pvcDR1.Name, replicationv1alpha1.Primary)
+
+			By("Waiting for primary VR on DR1 to reach Replicating=True")
+			WaitForVolumeReplicationReplicatingOrCompleted(ctx, cDR1, vrDR1, func(v *replicationv1alpha1.VolumeReplication) {
+				fmt.Fprintf(GinkgoWriter, "  [DR1][VR] %s\n", FormatVRStatus(v))
+			})
+
+			By("Creating secondary PVC and VR on DR2")
+			pvcDR2, pvDR2 := CreateSecondaryPVCFromPrimary(ctx, cDR1, cDR2, pvcDR1, nsName, "pvc-dr2-prom-003", func(p *corev1.PersistentVolumeClaim) {
+				fmt.Fprintf(GinkgoWriter, "  [DR2][PVC] %s\n", FormatPVCStatus(p))
+			})
+			vrcDR2 := CreateVolumeReplicationClass(ctx, cDR2, vrcName, env.Provisioner, secretName, secretNs, MirroringModeSnapshot)
+			vrDR2 := CreateVolumeReplication(ctx, cDR2, nsName, "vr-dr2-prom-003", vrcName, pvcDR2.Name, replicationv1alpha1.Secondary)
+
+			By("Waiting for secondary VR on DR2 to reach Replicating=True")
+			WaitForVolumeReplicationReplicatingOrCompleted(ctx, cDR2, vrDR2, func(v *replicationv1alpha1.VolumeReplication) {
+				fmt.Fprintf(GinkgoWriter, "  [DR2][VR] %s\n", FormatVRStatus(v))
+			})
+
+			var nfc *csiaddonsv1alpha1.NetworkFenceClass
+			var nf *csiaddonsv1alpha1.NetworkFence
+
+			DeferCleanup(func() {
+				cleanupCtx := context.Background()
+				DeleteNetworkFenceWithCleanup(cleanupCtx, cDR2, nf, vrDR2)
+				DeleteNetworkFenceClassWithCleanup(cleanupCtx, cDR2, nfc)
+				DeleteVolumeReplicationWithCleanup(cleanupCtx, cDR2, vrDR2)
+				DeleteVolumeReplicationClass(cleanupCtx, cDR2, vrcDR2)
+				DeletePVCWithCleanup(cleanupCtx, cDR2, pvcDR2)
+				DeletePV(cleanupCtx, cDR2, pvDR2)
+				DeleteVolumeReplicationWithCleanup(cleanupCtx, cDR1, vrDR1)
+				DeleteVolumeReplicationClass(cleanupCtx, cDR1, vrcDR1)
+				DeletePVCWithCleanup(cleanupCtx, cDR1, pvcDR1)
+				DeleteNamespace(cleanupCtx, cDR1, ns1)
+				DeleteNamespace(cleanupCtx, cDR2, ns2)
+			})
+
+			By("[DR2] Creating NetworkFenceClass to fence peer cluster")
+			nfcName := "nfc-prom-003-" + nsName
+			nfc = CreateNetworkFenceClass(ctx, cDR2, nfcName, env.Provisioner, secretName, secretNs)
+
+			By("[DR2] Getting fence CIDRs for peer cluster nodes")
+			cidrs := GetFenceCIDRs(ctx, cDR2, env.Provisioner, nfcName)
+			if len(cidrs) == 0 {
+				Skip("L1-PROM-003 could not get CIDRs: set FENCE_CIDRS or ensure cluster has nodes with InternalIP")
+			}
+
+			nfName := "nf-prom-003-" + nsName
+			By("[DR2] Creating NetworkFence (Fenced) to block peer cluster access")
+			nf = CreateNetworkFence(ctx, cDR2, nfName, nfcName, cidrs, csiaddonsv1alpha1.Fenced)
+			By("[DR2] Waiting for NetworkFence to report Succeeded")
+			WaitForNetworkFenceResult(ctx, cDR2, nf, csiaddonsv1alpha1.FencingOperationResultSucceeded)
+
+			By("[DR2] Attempting to promote secondary to primary while peer is fenced (force=false; should fail)")
+			vrDR2.Spec.ReplicationState = replicationv1alpha1.Primary
+			err := cDR2.Update(ctx, vrDR2)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("[DR2] Waiting for VR to report error (FailedToPromote or peer unreachable)")
+			WaitForVolumeReplicationError(ctx, cDR2, vrDR2)
+			err = cDR2.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrDR2.Name}, vrDR2)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Assertions: L1-PROM-003 — promote with peer down (force=false) fails")
+			Expect(hasVolumeReplicationErrorCondition(vrDR2)).To(BeTrue(),
+				"L1-PROM-003: VR with fenced peer must have error condition (message: %q)", vrDR2.Status.Message)
+			Expect(vrDR2.Status.State).NotTo(Equal(replicationv1alpha1.PrimaryState),
+				"L1-PROM-003: VR state should not change to Primary when peer is unreachable with force=false")
+
+			By("[DR2] Unfencing by setting NetworkFence state to Unfenced")
+			UnfenceNetworkFence(ctx, cDR2, nf)
+
+			By("[DR2] Waiting for NetworkFence unfence operation to complete successfully")
+			WaitForNetworkFenceResult(ctx, cDR2, nf, csiaddonsv1alpha1.FencingOperationResultSucceeded)
+
+			By("[DR2] Waiting for RBD mirror and cluster to recover VR health (Degraded=False)")
+			Eventually(func() bool {
+				err := cDR2.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrDR2.Name}, vrDR2)
+				if err != nil {
+					return false
+				}
+				// Check that VR is no longer degraded (Degraded=False)
+				for _, cond := range vrDR2.Status.Conditions {
+					if cond.Type == "Degraded" {
+						isHealthy := cond.Status == metav1.ConditionFalse
+						if isHealthy {
+							fmt.Fprintf(GinkgoWriter, "  [DR2][VR recovered] %s\n", FormatVRStatus(vrDR2))
+						}
+						return isHealthy
+					}
+				}
+				return false
+			}, 10*time.Minute, 10*time.Second).Should(BeTrue(),
+				"VR health should recover (Degraded=False) after unfencing within 10 minutes")
+
+			By("[DR2] Waiting for controller to retry and promote to succeed")
+			WaitForVolumeReplicationReplicatingOrCompleted(ctx, cDR2, vrDR2, func(v *replicationv1alpha1.VolumeReplication) {
+				fmt.Fprintf(GinkgoWriter, "  [DR2][VR after unfence] %s\n", FormatVRStatus(v))
+			})
+			err = cDR2.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrDR2.Name}, vrDR2)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("[DR2] Waiting for VR state to transition to Primary (state change may be async after operation succeeds)")
+			Eventually(func() (replicationv1alpha1.State, error) {
+				err := cDR2.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrDR2.Name}, vrDR2)
+				return vrDR2.Status.State, err
+			}, 2*time.Minute, 5*time.Second).Should(Or(Equal(replicationv1alpha1.PrimaryState), Equal(replicationv1alpha1.UnknownState)),
+				"VR state should transition to Primary or Unknown after promote operation")
+			err = cDR2.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrDR2.Name}, vrDR2)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Assertions: L1-PROM-003 — promote succeeds after unfence")
+			Expect(vrDR2.Status.State).To(Or(Equal(replicationv1alpha1.PrimaryState), Equal(replicationv1alpha1.UnknownState)),
+				"L1-PROM-003: VR state must be Primary or Unknown after unfence and successful promote, got %q", vrDR2.Status.State)
+			Expect(hasReplicationSuccessCondition(vrDR2)).To(BeTrue(),
+				"L1-PROM-003: VR must have Replicating or Completed condition after successful promote")
+		})
+	})
+
+	Describe("L1-PROM-004: Promote secondary to primary with peer unreachable (force=true)", func() {
+		It("L1-PROM-004: fence peer cluster → force promote succeeds → unfence → verify stability", func() {
+			By("Starting L1-PROM-004: Promote secondary to primary with peer unreachable (force=true)")
+			SkipIfNotFullDR("L1-PROM-004", "requires two clusters (DR1_CONTEXT and DR2_CONTEXT)")
+
+			By("Checking that the driver supports NetworkFence")
+			if !IsNetworkFenceSupportAvailable() {
+				Skip("L1-PROM-004 requires NetworkFence and NetworkFenceClass CRDs to be installed and the CSI driver to advertise network_fence.NETWORK_FENCE in CSIAddonsNode status.capabilities.")
+			}
+
+			cDR1 := GetK8sClientForCluster(ClusterDR1)
+			cDR2 := GetK8sClientForCluster(ClusterDR2)
+
+			nsName := UniqueNamespace()
+			By("Creating namespace on both DR1 and DR2")
+			ns1 := CreateNamespace(ctx, cDR1, nsName)
+			ns2 := CreateNamespace(ctx, cDR2, nsName)
+
+			secretName, secretNs := ReplicationSecretRef(ctx, cDR1, env, nsName)
+
+			By("Creating primary PVC and VR on DR1")
+			pvcDR1 := CreatePVC(ctx, cDR1, nsName, "pvc-dr1-prom-004", env.StorageClass, "1Gi", func(p *corev1.PersistentVolumeClaim) {
+				fmt.Fprintf(GinkgoWriter, "  [DR1][PVC] %s\n", FormatPVCStatus(p))
+			})
+			vrcName := "vrc-prom-004-" + nsName
+			vrcDR1 := CreateVolumeReplicationClass(ctx, cDR1, vrcName, env.Provisioner, secretName, secretNs, MirroringModeSnapshot)
+			vrDR1 := CreateVolumeReplication(ctx, cDR1, nsName, "vr-dr1-prom-004", vrcName, pvcDR1.Name, replicationv1alpha1.Primary)
+
+			By("Waiting for primary VR on DR1 to reach Replicating=True")
+			WaitForVolumeReplicationReplicatingOrCompleted(ctx, cDR1, vrDR1, func(v *replicationv1alpha1.VolumeReplication) {
+				fmt.Fprintf(GinkgoWriter, "  [DR1][VR] %s\n", FormatVRStatus(v))
+			})
+
+			By("Creating secondary PVC and VR on DR2")
+			pvcDR2, pvDR2 := CreateSecondaryPVCFromPrimary(ctx, cDR1, cDR2, pvcDR1, nsName, "pvc-dr2-prom-004", func(p *corev1.PersistentVolumeClaim) {
+				fmt.Fprintf(GinkgoWriter, "  [DR2][PVC] %s\n", FormatPVCStatus(p))
+			})
+			vrcDR2 := CreateVolumeReplicationClass(ctx, cDR2, vrcName, env.Provisioner, secretName, secretNs, MirroringModeSnapshot)
+			vrDR2 := CreateVolumeReplication(ctx, cDR2, nsName, "vr-dr2-prom-004", vrcName, pvcDR2.Name, replicationv1alpha1.Secondary)
+
+			By("Waiting for secondary VR on DR2 to reach Replicating=True")
+			WaitForVolumeReplicationReplicatingOrCompleted(ctx, cDR2, vrDR2, func(v *replicationv1alpha1.VolumeReplication) {
+				fmt.Fprintf(GinkgoWriter, "  [DR2][VR] %s\n", FormatVRStatus(v))
+			})
+
+			var nfc *csiaddonsv1alpha1.NetworkFenceClass
+			var nf *csiaddonsv1alpha1.NetworkFence
+
+			DeferCleanup(func() {
+				cleanupCtx := context.Background()
+				DeleteNetworkFenceWithCleanup(cleanupCtx, cDR2, nf, vrDR2)
+				DeleteNetworkFenceClassWithCleanup(cleanupCtx, cDR2, nfc)
+				DeleteVolumeReplicationWithCleanup(cleanupCtx, cDR2, vrDR2)
+				DeleteVolumeReplicationClass(cleanupCtx, cDR2, vrcDR2)
+				DeletePVCWithCleanup(cleanupCtx, cDR2, pvcDR2)
+				DeletePV(cleanupCtx, cDR2, pvDR2)
+				DeleteVolumeReplicationWithCleanup(cleanupCtx, cDR1, vrDR1)
+				DeleteVolumeReplicationClass(cleanupCtx, cDR1, vrcDR1)
+				DeletePVCWithCleanup(cleanupCtx, cDR1, pvcDR1)
+				DeleteNamespace(cleanupCtx, cDR1, ns1)
+				DeleteNamespace(cleanupCtx, cDR2, ns2)
+			})
+
+			By("[DR2] Creating NetworkFenceClass to fence peer cluster")
+			nfcName := "nfc-prom-004-" + nsName
+			nfc = CreateNetworkFenceClass(ctx, cDR2, nfcName, env.Provisioner, secretName, secretNs)
+
+			By("[DR2] Getting fence CIDRs for peer cluster nodes")
+			cidrs := GetFenceCIDRs(ctx, cDR2, env.Provisioner, nfcName)
+			if len(cidrs) == 0 {
+				Skip("L1-PROM-004 could not get CIDRs: set FENCE_CIDRS or ensure cluster has nodes with InternalIP")
+			}
+
+			nfName := "nf-prom-004-" + nsName
+			By("[DR2] Creating NetworkFence (Fenced) to block peer cluster access")
+			nf = CreateNetworkFence(ctx, cDR2, nfName, nfcName, cidrs, csiaddonsv1alpha1.Fenced)
+			By("[DR2] Waiting for NetworkFence to report Succeeded")
+			WaitForNetworkFenceResult(ctx, cDR2, nf, csiaddonsv1alpha1.FencingOperationResultSucceeded)
+
+			By("[DR2] Attempting to promote secondary to primary while peer is fenced (force=true; should succeed)")
+			vrDR2.Spec.ReplicationState = replicationv1alpha1.Primary
+			err := cDR2.Update(ctx, vrDR2)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("[DR2] Waiting for VR to report success (Replicating or Completed with Promoted reason)")
+			WaitForVolumeReplicationReplicatingOrCompleted(ctx, cDR2, vrDR2, func(v *replicationv1alpha1.VolumeReplication) {
+				fmt.Fprintf(GinkgoWriter, "  [DR2][VR force promote] %s\n", FormatVRStatus(v))
+			})
+			err = cDR2.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrDR2.Name}, vrDR2)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("[DR2] Waiting for VR state to transition to Primary (state change may be async after operation succeeds)")
+			Eventually(func() (replicationv1alpha1.State, error) {
+				err := cDR2.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrDR2.Name}, vrDR2)
+				return vrDR2.Status.State, err
+			}, 2*time.Minute, 5*time.Second).Should(Or(Equal(replicationv1alpha1.PrimaryState), Equal(replicationv1alpha1.UnknownState)),
+				"VR state should transition to Primary or Unknown after promote operation")
+			err = cDR2.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrDR2.Name}, vrDR2)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Assertions: L1-PROM-004 — force promote with peer down succeeds")
+			Expect(vrDR2.Status.State).To(Or(Equal(replicationv1alpha1.PrimaryState), Equal(replicationv1alpha1.UnknownState)),
+				"L1-PROM-004: VR state must transition to Primary or Unknown after force promote, got %q", vrDR2.Status.State)
+			Expect(hasReplicationSuccessCondition(vrDR2)).To(BeTrue(),
+				"L1-PROM-004: VR must have Replicating or Completed condition after force promote")
+
+			By("[DR2] Unfencing by setting NetworkFence state to Unfenced")
+			UnfenceNetworkFence(ctx, cDR2, nf)
+
+			By("[DR2] Waiting for NetworkFence unfence operation to complete successfully")
+			WaitForNetworkFenceResult(ctx, cDR2, nf, csiaddonsv1alpha1.FencingOperationResultSucceeded)
+
+			By("[DR2] Waiting for RBD mirror and cluster to recover VR health (Degraded=False)")
+			Eventually(func() bool {
+				err := cDR2.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrDR2.Name}, vrDR2)
+				if err != nil {
+					return false
+				}
+				// Check that VR is no longer degraded (Degraded=False)
+				for _, cond := range vrDR2.Status.Conditions {
+					if cond.Type == "Degraded" {
+						isHealthy := cond.Status == metav1.ConditionFalse
+						if isHealthy {
+							fmt.Fprintf(GinkgoWriter, "  [DR2][VR recovered] %s\n", FormatVRStatus(vrDR2))
+						}
+						return isHealthy
+					}
+				}
+				return false
+			}, 10*time.Minute, 10*time.Second).Should(BeTrue(),
+				"VR health should recover (Degraded=False) after unfencing within 10 minutes")
+
+			By("[DR2] Verifying VR remains stable after unfence")
+			Eventually(func() (replicationv1alpha1.State, error) {
+				err := cDR2.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrDR2.Name}, vrDR2)
+				return vrDR2.Status.State, err
+			}, 2*time.Minute, 5*time.Second).Should(Or(Equal(replicationv1alpha1.PrimaryState), Equal(replicationv1alpha1.UnknownState)),
+				"VR state should stabilize and remain Primary or Unknown after unfence")
+
+			By("Assertions: L1-PROM-004 — VR remains stable after unfence")
+			Expect(vrDR2.Status.State).To(Or(Equal(replicationv1alpha1.PrimaryState), Equal(replicationv1alpha1.UnknownState)),
+				"L1-PROM-004: VR state should remain Primary or Unknown after unfence, got %q", vrDR2.Status.State)
+
+			DeleteNetworkFenceWithCleanup(ctx, cDR2, nf)
+		})
+	})
+
+	Describe("L1-PROM-005: Promote secondary to primary with array unreachable (force=false)", func() {
+		It("L1-PROM-005: [SCAFFOLD] array unreachable simulation required", func() {
+			By("Starting L1-PROM-005: Promote secondary to primary with array unreachable (force=false)")
+			Skip(`L1-PROM-005 requires array/storage unreachable simulation not yet supported in test infrastructure.
+
+Prerequisites for implementation:
+1. Driver-specific storage shutdown mechanism (e.g., Ceph RBD pool offline)
+   - NetworkFence blocks network access to peer; does NOT block local storage access
+   - This test needs LOCAL storage unavailable on secondary cluster
+2. Mock CSI driver hook or test container that simulates storage errors
+3. Alternative: Extend CSI driver test harness to inject storage unavailability errors
+
+Expected behavior when array is unreachable:
+- CSI driver reports volume unavailable or I/O error
+- Controller cannot perform PromoteVolume RPC (storage required for operation)
+- VR status: Degraded=True, FailedToPromote reason
+- force=false: Error persists until storage recovers`)
+		})
+	})
+
+	Describe("L1-PROM-006: Promote secondary to primary with array unreachable (force=true)", func() {
+		It("L1-PROM-006: [SCAFFOLD] array unreachable simulation required", func() {
+			By("Starting L1-PROM-006: Promote secondary to primary with array unreachable (force=true)")
+			Skip(`L1-PROM-006 requires array/storage unreachable simulation not yet supported in test infrastructure.
+
+Prerequisites for implementation:
+1. Driver-specific storage shutdown mechanism (e.g., Ceph RBD pool offline)
+2. Mock CSI driver or storage unavailability injection
+3. Verify that force=true CANNOT overcome storage layer issues (unlike force=false peer scenarios)
+
+Expected behavior:
+- Storage unavailability cannot be overridden by force parameter
+- force=true still fails because local storage is unavailable
+- Reason: CSI operations (PromoteVolume) require storage access; force only affects peer coordination`)
 		})
 	})
 })

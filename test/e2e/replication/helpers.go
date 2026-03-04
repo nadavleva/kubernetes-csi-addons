@@ -874,7 +874,8 @@ func RemoveFinalizerFromNetworkFence(ctx context.Context, c client.Client, nf *c
 
 // DeleteNetworkFenceWithCleanup unfences the CIDRs (sets fenceState: Unfenced), then deletes the
 // NetworkFence. Deletion no longer triggers UnfenceClusterNetwork; unfence must be explicit.
-func DeleteNetworkFenceWithCleanup(ctx context.Context, c client.Client, nf *csiaddonsv1alpha1.NetworkFence) {
+// If vrs is provided (non-nil), waits for each VR's Degraded condition to become False before deletion.
+func DeleteNetworkFenceWithCleanup(ctx context.Context, c client.Client, nf *csiaddonsv1alpha1.NetworkFence, vrs ...*replicationv1alpha1.VolumeReplication) {
 	if nf == nil {
 		return
 	}
@@ -888,6 +889,28 @@ func DeleteNetworkFenceWithCleanup(ctx context.Context, c client.Client, nf *csi
 	// Unfence first: deletion no longer triggers UnfenceClusterNetwork
 	if nf.Spec.FenceState == csiaddonsv1alpha1.Fenced {
 		UnfenceNetworkFence(ctx, c, nf)
+		// Wait for unfence operation to complete before deletion
+		WaitForNetworkFenceResult(ctx, c, nf, csiaddonsv1alpha1.FencingOperationResultSucceeded)
+		// If VRs provided, wait for them to recover (Degraded=False) instead of hardcoded sleep
+		for _, vr := range vrs {
+			if vr == nil {
+				continue
+			}
+			Eventually(func() bool {
+				err := c.Get(ctx, client.ObjectKeyFromObject(vr), vr)
+				if err != nil {
+					return false
+				}
+				// Check that VR is no longer degraded (Degraded=False)
+				for _, cond := range vr.Status.Conditions {
+					if cond.Type == "Degraded" {
+						return cond.Status == metav1.ConditionFalse
+					}
+				}
+				return false
+			}, 200*time.Second, 10*time.Second).Should(BeTrue(),
+				"VR %s/%s health should recover (Degraded=False) after unfencing", vr.Namespace, vr.Name)
+		}
 	}
 	_ = c.Delete(ctx, nf)
 	deadline := time.Now().Add(cleanupWaitTimeout)

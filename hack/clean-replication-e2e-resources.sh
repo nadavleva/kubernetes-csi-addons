@@ -166,7 +166,7 @@ for CURRENT_CTX in "${CONTEXTS[@]}"; do
 		done
 	fi
 
-	# 3) NetworkFence and NetworkFenceClass created by L1-E-003 test
+	# 3) NetworkFence and NetworkFenceClass created by L1-E-003 and L1-PROM/DEM-003/004 tests
 	remove_networkfence_finalizer() {
 		local name="$1"
 		if [[ "$DRY_RUN" == "true" ]]; then
@@ -185,14 +185,49 @@ for CURRENT_CTX in "${CONTEXTS[@]}"; do
 		kubectl_ctx "$CURRENT_CTX" patch networkfenceclass "$name" -p '{"metadata":{"finalizers":[]}}' --type=merge 2>/dev/null || true
 	}
 
+	# Unfence a NetworkFence by setting fenceState to Unfenced
+	unfence_networkfence() {
+		local name="$1"
+		if [[ "$DRY_RUN" == "true" ]]; then
+			echo "  [dry-run] would unfence NetworkFence $name"
+			return 0
+		fi
+		kubectl_ctx "$CURRENT_CTX" patch networkfence "$name" -p '{"spec":{"fenceState":"Unfenced"}}' --type=merge 2>/dev/null || true
+	}
+
+	# Wait for NetworkFence to report Succeeded result (after unfencing)
+	wait_for_networkfence_unfence_success() {
+		local name="$1"
+		local timeout=30
+		local waited=0
+		while [[ $waited -lt $timeout ]]; do
+			local result=$(kubectl_ctx "$CURRENT_CTX" get networkfence "$name" -o jsonpath='{.status.result}' 2>/dev/null || echo "")
+			if [[ "$result" == "Succeeded" ]]; then
+				return 0
+			fi
+			sleep 2
+			waited=$((waited + 2))
+		done
+		return 1
+	}
+
 	if kubectl_ctx "$CURRENT_CTX" get crd networkfences.csiaddons.openshift.io &>/dev/null; then
 		echo ""
 		echo "Cleaning test NetworkFences..."
 		for nf in $(kubectl_ctx "$CURRENT_CTX" get networkfence -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do
-			if [[ "$nf" == nf-fence-* ]]; then
+			# Match test patterns: nf-fence-*, nf-prom-*-e2e-replication-*, nf-dem-*-e2e-replication-*
+			if [[ "$nf" == nf-fence-* ]] || [[ "$nf" == nf-prom-*-e2e-replication-* ]] || [[ "$nf" == nf-dem-*-e2e-replication-* ]]; then
 				if [[ "$DRY_RUN" == "true" ]]; then
-					echo "  [dry-run] would delete NetworkFence $nf"
+					echo "  [dry-run] would unfence and delete NetworkFence $nf"
 				else
+					# Unfence first (set fenceState to Unfenced) before deletion
+					echo "  Unfencing NetworkFence $nf..."
+					unfence_networkfence "$nf"
+					if ! wait_for_networkfence_unfence_success "$nf"; then
+						echo "  Warning: unfence did not complete successfully for $nf, proceeding with deletion"
+					fi
+					
+					# Delete the NetworkFence
 					kubectl_ctx "$CURRENT_CTX" delete networkfence "$nf" --ignore-not-found --timeout=30s 2>/dev/null || true
 					# Remove finalizer if still present (e.g. stuck in Terminating)
 					if kubectl_ctx "$CURRENT_CTX" get networkfence "$nf" &>/dev/null; then
@@ -208,10 +243,13 @@ for CURRENT_CTX in "${CONTEXTS[@]}"; do
 	if kubectl_ctx "$CURRENT_CTX" get crd networkfenceclasses.csiaddons.openshift.io &>/dev/null; then
 		echo "Cleaning test NetworkFenceClasses..."
 		for nfc in $(kubectl_ctx "$CURRENT_CTX" get networkfenceclass -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do
-			if [[ "$nfc" == nfc-fence-* ]]; then
+			# Match test patterns: nfc-fence-*, nfc-prom-*-e2e-replication-*, nfc-dem-*-e2e-replication-*
+			if [[ "$nfc" == nfc-fence-* ]] || [[ "$nfc" == nfc-prom-*-e2e-replication-* ]] || [[ "$nfc" == nfc-dem-*-e2e-replication-* ]]; then
 				if [[ "$DRY_RUN" == "true" ]]; then
 					echo "  [dry-run] would delete NetworkFenceClass $nfc"
 				else
+					echo "  Deleting NetworkFenceClass $nfc..."
+					# Delete the NetworkFenceClass
 					kubectl_ctx "$CURRENT_CTX" delete networkfenceclass "$nfc" --ignore-not-found --timeout=30s 2>/dev/null || true
 					# Remove finalizer if still present (e.g. stuck in Terminating)
 					if kubectl_ctx "$CURRENT_CTX" get networkfenceclass "$nfc" &>/dev/null; then
