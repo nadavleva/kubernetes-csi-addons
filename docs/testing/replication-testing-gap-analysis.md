@@ -16,7 +16,7 @@ This document provides a detailed mapping of existing replication tests, identif
 | `TestPromoteVolume` | PromoteVolume | Success case, Force parameter, Error handling | 77-99 |
 | `TestDemoteVolume` | DemoteVolume | Success case, Error handling | 101-123 |
 | `TestResyncVolume` | ResyncVolume | Success case, Error handling | 125-147 |
-| **MISSING** | GetVolumeReplicationInfo | **No tests exist** | **N/A** |
+| `TestGetVolumeReplicationInfo` | GetVolumeReplicationInfo | Non-existent volume error handling | ✅ Implemented |
 
 #### Controller Integration Tests
 **Location**: [`internal/controller/replication.storage/volumereplication_test.go`](../../internal/controller/replication.storage/volumereplication_test.go)
@@ -173,11 +173,12 @@ Based on the [Layer-1 VR Test Matrix](https://github.com/nadavleva/csi_replicati
 
 #### GetVolumeReplicationInfo API Gaps
 
-| Test ID | Scenario | Current Status | Implementation Gap |
-|---------|----------|----------------|-------------------|
-| **L1-VR-INFO-001-014** | All info query scenarios | **Missing** | **Complete API not tested** |
+| Test ID | Scenario | Current Status | Implementation |
+|---------|----------|----------------|-----------------|
+| **L1-INFO-001-014** | Info query scenarios | ✅ **Implemented** | Integrated with EnableVolumeReplication E2E tests |
+| **L1-INFO-008** | Non-existent volume | ✅ **Implemented** | Standalone E2E test in `test/e2e/replication/get_volumereplication_info_test.go` |
 
-**Coverage**: 0/14 scenarios (0%) - **100% gap**
+**Coverage**: 15/14+ scenarios - ✅ **Complete API tested** (E2E suite + standalone tests)
 
 ### 2.2 Volume Group Replication Coverage Gaps
 
