@@ -512,6 +512,76 @@ func WaitForVolumeReplicationError(ctx context.Context, c client.Client, vr *rep
 		"VolumeReplication %s/%s should report an error", vr.Namespace, vr.Name)
 }
 
+// HasVolumeReplicationErrorCondition is an exported wrapper for hasVolumeReplicationErrorCondition.
+// Used by test code to check if a VR has an error condition (aligned with csi-addons controller behavior).
+func HasVolumeReplicationErrorCondition(vr *replicationv1alpha1.VolumeReplication) bool {
+	return hasVolumeReplicationErrorCondition(vr)
+}
+
+// WaitForVolumeReplicationInfoWithStatus waits until GetVolumeReplicationInfo would report a specific status
+// (e.g., "healthy", "degraded", "syncing"). This is called via VR status polling and formatting for logging.
+// The status parameter is typically "healthy", "degraded", "syncing", "disconnected", or "error".
+// This helper validates that GetVolumeReplicationInfo-related status transitions occur in the VR.
+// Returns the VR when the expected status is achieved, or nil on timeout.
+func WaitForVolumeReplicationInfoWithStatus(ctx context.Context, c client.Client, pvcName, nsName, expectedStatus string, onPoll func(*replicationv1alpha1.VolumeReplication)) *replicationv1alpha1.VolumeReplication {
+	// Find the VR associated with this PVC
+	vrList := &replicationv1alpha1.VolumeReplicationList{}
+	err := c.List(ctx, vrList, client.InNamespace(nsName))
+	if err != nil {
+		return nil
+	}
+
+	for _, vr := range vrList.Items {
+		if vr.Spec.DataSource.Name == pvcName {
+			// Wait for the VR to reach the expected status
+			timeout := getReplicationPollTimeout()
+			key := client.ObjectKeyFromObject(&vr)
+			deadline := time.Now().Add(timeout)
+			for time.Now().Before(deadline) {
+				err := c.Get(ctx, key, &vr)
+				if err != nil {
+					time.Sleep(pollInterval)
+					continue
+				}
+				if onPoll != nil {
+					onPoll(&vr)
+				}
+				// Check for expected status based on VR state and conditions
+				statusMatches := false
+				switch expectedStatus {
+				case "healthy":
+					// Healthy: Replicating=True or Completed=True, no error
+					statusMatches = (hasReplicationSuccessCondition(&vr)) && !hasVolumeReplicationErrorCondition(&vr)
+				case "degraded":
+					// Degraded: Has error condition or Degraded=True
+					statusMatches = hasVolumeReplicationErrorCondition(&vr)
+				case "syncing":
+					// Syncing: Replicating=True (actively syncing)
+					for _, cond := range vr.Status.Conditions {
+						if cond.Type == replicationv1alpha1.ConditionReplicating && cond.Status == metav1.ConditionTrue {
+							statusMatches = true
+							break
+						}
+					}
+				case "disconnected":
+					// Disconnected: Degraded state with peer communication error
+					statusMatches = hasVolumeReplicationErrorCondition(&vr)
+				case "error":
+					// Error: Any error condition
+					statusMatches = hasVolumeReplicationErrorCondition(&vr)
+				}
+				if statusMatches {
+					return &vr
+				}
+				time.Sleep(pollInterval)
+			}
+			// Timeout reached
+			return nil
+		}
+	}
+	return nil
+}
+
 // RemoveFinalizerFromVR patches the VR to remove the replication finalizer so it can be deleted.
 // Use when the controller is unable to remove it (e.g. driver unreachable).
 func RemoveFinalizerFromVR(ctx context.Context, c client.Client, vr *replicationv1alpha1.VolumeReplication) {
@@ -858,6 +928,31 @@ func WaitForNetworkFenceResult(ctx context.Context, c client.Client, nf *csiaddo
 		return nf.Status.Result == result
 	}, networkFencePollTimeout, pollInterval).Should(BeTrue(),
 		"NetworkFence %s should get status.result=%s (got %s)", nf.Name, result, nf.Status.Result)
+}
+
+// CreateNetworkFenceAndWait creates both a NetworkFenceClass and a NetworkFence, waits for the fence to complete.
+// This is a convenience function for tests that need to simulate split-brain via network isolation.
+// Returns the created NetworkFenceClass and NetworkFence pointers.
+func CreateNetworkFenceAndWait(ctx context.Context, c client.Client, namespace, provisioner, secretName, secretNamespace string) (*csiaddonsv1alpha1.NetworkFenceClass, *csiaddonsv1alpha1.NetworkFence) {
+	nfcName := "nfc-" + UniqueNamespace()
+	nfName := "nf-" + UniqueNamespace()
+
+	// Create NetworkFenceClass
+	nfc := CreateNetworkFenceClass(ctx, c, nfcName, provisioner, secretName, secretNamespace)
+
+	// Get CIDRs to fence
+	cidrs := GetFenceCIDRs(ctx, c, provisioner, nfcName)
+	if len(cidrs) == 0 {
+		Expect(cidrs).NotTo(BeEmpty(), "Failed to get CIDRs for network fencing")
+	}
+
+	// Create NetworkFence with Fenced state
+	nf := CreateNetworkFence(ctx, c, nfName, nfcName, cidrs, csiaddonsv1alpha1.Fenced)
+
+	// Wait for fence to be applied
+	WaitForNetworkFenceResult(ctx, c, nf, csiaddonsv1alpha1.FencingOperationResultSucceeded)
+
+	return nfc, nf
 }
 
 // UnfenceNetworkFence sets fenceState to Unfenced to unblock the CIDRs. Deletion no longer
