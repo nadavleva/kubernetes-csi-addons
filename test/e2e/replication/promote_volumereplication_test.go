@@ -506,7 +506,8 @@ var _ = Describe("PromoteVolumeReplication", func() {
 	Describe("L1-PROM-004: Promote secondary to primary with peer unreachable (force=true)", func() {
 		It("L1-PROM-004: fence peer cluster → force promote succeeds → unfence → verify stability", func() {
 			// SKIP REASON: L1-PROM-004 is skipped due to an issue with force promote in degraded RBD mirror mode.
-			//
+			// GitHub Issue: https://github.com/nadavleva/kubernetes-csi-addons/issues/7
+			// 
 			// ISSUE DESCRIPTION:
 			// When the RBD mirror is degraded (peer cluster is unreachable/fenced), the force promote operation
 			// does not transition the VolumeReplication state to Primary or Unknown as expected. Instead, the VR
@@ -526,7 +527,8 @@ var _ = Describe("PromoteVolumeReplication", func() {
 			// 1. Investigate RBD mirror degradation handling in the CSI driver
 			// 2. Check if RBD mirror can be forced to Primary when degraded
 			// 3. May require driver-level changes or RBD configuration updates
-			Skip("L1-PROM-004: Skipped due to RBD mirror force promote issue in degraded mode - VR state does not transition to Primary when peer is fenced (see comment for details)")
+			// See GitHub issue for investigation details and updates.
+			Skip("L1-PROM-004: Skipped due to RBD mirror force promote issue in degraded mode - VR state does not transition to Primary when peer is fenced. Ref: https://github.com/nadavleva/kubernetes-csi-addons/issues/7")
 
 			By("Starting L1-PROM-004: Promote secondary to primary with peer unreachable (force=true)")
 			SkipIfNotFullDR("L1-PROM-004", "requires two clusters (DR1_CONTEXT and DR2_CONTEXT)")
