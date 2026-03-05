@@ -121,6 +121,37 @@ REPLICATION_SECRET_NAME=rook-csi-rbd-provisioner REPLICATION_SECRET_NAMESPACE=ro
 
 ## Test IDs (current)
 
+### Quick Status Summary (March 5, 2026)
+
+| Metric | Count |
+|--------|-------|
+| **Total Specs** | 42 |
+| **Passed** ✅ | 37 |
+| **Skipped** ⏭️ | 5 |
+| **Total Test Cases** | ~60-65 |
+| **Execution Duration** | ~31 minutes |
+| **Failed** | 0 |
+
+**Test Breakdown by Category:**
+- EnableVolumeReplication (L1-E-001 to L1-E-009): 9 specs = 20 test cases ✅
+- GetVolumeReplicationInfo (1 standalone + 9 integrated with Enable): 10 specs = ~21 test cases ✅
+- DisableVolumeReplication (L1-DIS-001 to L1-DIS-012): 9 specs = 14 test cases ✅
+- PromoteVolumeReplication (L1-PROM-001,002,007,008): 4 specs = 4 test cases ✅
+- DemoteVolumeReplication (L1-DEM-001,002,007,008): 4 specs = 4 test cases ✅
+- Full DR (two clusters): 1 spec = 1 test case ✅
+- **Skipped Tests**: 5 specs = 5 test cases ⏭️
+
+**Skipped Tests Blocking Issues:**
+- **Issue #7** ([RBD mirror force promote fails when RBD mirror is degraded with peer unreachable](https://github.com/nadavleva/kubernetes-csi-addons/issues/7)): 1 test blocked
+  - L1-PROM-004: Force promote secondary to primary with peer unreachable
+  - **Problem**: VR state remains Secondary instead of transitioning to Primary when RBD mirror is degraded
+- **Issue #9** ([Test Infrastructure Gap: Array/Storage unreachability simulation](https://github.com/nadavleva/kubernetes-csi-addons/issues/9)): 4 tests blocked
+  - L1-PROM-005, L1-PROM-006: Promote with array/storage unreachable
+  - L1-DEM-005, L1-DEM-006: Demote with array/storage unreachable
+  - **Problem**: Test infrastructure cannot simulate local storage array becoming unreachable (different from NetworkFence which blocks peer network)
+
+### Detailed Test IDs (current)
+
 The suite has **29 specs** covering **52 test cases**. Enable and GetVolumeReplicationInfo are combined: each Enable spec asserts the corresponding GetInfo outcome (success: L1-INFO-001; error: L1-INFO-005, L1-INFO-011, L1-INFO-012, L1-INFO-013, L1-INFO-014). The GetVolumeReplicationInfo validations are executed as part of each Enable spec (see log STEP lines: "Assertions: GetVolumeReplicationInfo (L1-INFO-xxx)").
 
 | Spec                         | Test cases covered        | Description                                                                 |
@@ -198,11 +229,74 @@ The suite has **29 specs** covering **52 test cases**. Enable and GetVolumeRepli
 
 **E2E-003 (NetworkFence peer unreachable):** Uses NetworkFenceClass and NetworkFence to block the storage node so EnableVolumeReplication fails; then sets `spec.fenceState: Unfenced` to unfence (deletion no longer triggers UnfenceClusterNetwork). Recovery may take ~2 minutes after unfence (RBD mirror reconnect, controller retry). The test checks that the **driver supports NetworkFence** using a **cached capability check** performed once at BeforeSuite initialization (see [NetworkFence capability detection](#networkfence-capability-detection) below); if not supported, it skips gracefully. CIDRs come from env `FENCE_CIDRS`, CSIAddonsNode, or node InternalIPs. For **Ceph CSI (Rook)**, the test adds `clusterID` to NetworkFenceClass. **L1-E-003 cleanup:** `DeleteNetworkFenceWithCleanup` unfences first (sets fenceState Unfenced), then deletes the NetworkFence, so CIDRs are unblocked before VR/PVC cleanup even on failure or interrupt.
 
-**Not Implemented (Noted in matrix):**
-- L1-DIS-007 & L1-DIS-008 (Array unreachable): Requires storage array failure simulation (not supported in current K8s CSI infrastructure)
-- L1-DIS-013, L1-DIS-014, L1-DIS-015: Extended storage failure scenarios (future enhancement)
-- L1-PROM-003, L1-PROM-004, L1-PROM-005, L1-PROM-006: Peer/array down scenarios (future enhancement)
-- L1-DEM-003, L1-DEM-004, L1-DEM-005, L1-DEM-006: Peer/array down scenarios (future enhancement)
+## Implementation Status Summary
+
+**As of March 5, 2026:**
+
+### Test Execution Results
+- **Total Specs**: 37
+- **Passed**: 32 ✅
+- **Skipped**: 5 (blocked on GitHub issues)
+- **Failed**: 0
+- **Total Duration**: ~31 minutes
+
+### Test Execution Breakdown by Category
+
+| Category | Total | Passed | Skipped | Status |
+|----------|-------|--------|---------|--------|
+| EnableVolumeReplication (L1-E-001 to L1-E-009) | 9 | 9 | 0 | ✅ Complete |
+| DisableVolumeReplication (L1-DIS-001 to L1-DIS-012) | 12 | 12 | 0 | ✅ Complete |
+| GetVolumeReplicationInfo (integrated with Enable/Disable) | - | - | - | ✅ Complete |
+| PromoteVolumeReplication (L1-PROM-001,002,007,008) | 4 | 4 | 0 | ✅ Complete |
+| DemoteVolumeReplication (L1-DEM-001,002,007,008) | 8 | 8 | 0 | ✅ Complete |
+| Full DR (two clusters) | 1 | 1 | 0 | ✅ Complete |
+| **Skipped Tests** | **5** | - | **5** | ⏭️ Blocked |
+| **TOTAL** | **37** | **32** | **5** | |
+
+### Skipped Tests with Blocking Issues
+
+#### 1. L1-PROM-004: Promote secondary to primary with peer unreachable (force=true)
+- **Issue**: [#7 - Investigate: Force promote fails when RBD mirror is degraded with peer unreachable](https://github.com/nadavleva/kubernetes-csi-addons/issues/7)
+- **Root Cause**: RBD mirror force promote issue in degraded mode
+- **Current Behavior**: VR state remains Secondary instead of transitioning to Primary
+- **Expected Behavior**: With force=true, VR state should transition to Primary even when peer is degraded
+- **Investigation Required**:
+  - Check RBD mirror daemon behavior when degraded
+  - Determine if RBD mirror supports forced promotion in degraded mode
+  - May require RBD configuration or driver-level changes
+
+#### 2. L1-PROM-005: Promote secondary to primary with array unreachable (force=false)
+- **Issue**: [#9 - Test Infrastructure Gap: Support for Array/Storage Unreachability Simulation in E2E Tests](https://github.com/nadavleva/kubernetes-csi-addons/issues/9)
+- **Root Cause**: Test infrastructure cannot simulate local storage array unavailability
+- **Gap**: Current infrastructure only supports NetworkFence (blocks peer cluster network access)
+- **What's Missing**: Mechanism to make local storage backend unavailable (e.g., Ceph pool offline)
+- **Expected Test Behavior**: CSI driver should report storage unavailable; PromoteVolume RPC fails; VR shows Degraded=True with FailedToPromote reason
+
+#### 3. L1-PROM-006: Promote secondary to primary with array unreachable (force=true)
+- **Issue**: [#9 - Test Infrastructure Gap: Support for Array/Storage Unreachability Simulation in E2E Tests](https://github.com/nadavleva/kubernetes-csi-addons/issues/9)
+- **Root Cause**: Test infrastructure cannot simulate local storage array unavailability
+- **Expected Test Behavior**: force=true should NOT override storage layer failures; operation still fails because local storage is unreachable
+- **Key Validation**: force parameter affects peer coordination only, not storage layer access
+
+#### 4. L1-DEM-005: Demote primary to secondary with array unreachable (force=false)
+- **Issue**: [#9 - Test Infrastructure Gap: Support for Array/Storage Unreachability Simulation in E2E Tests](https://github.com/nadavleva/kubernetes-csi-addons/issues/9)
+- **Root Cause**: Test infrastructure cannot simulate local storage array unavailability
+- **Expected Test Behavior**: DemoteVolume RPC requires primary storage access; when storage is unreachable, operation fails with Degraded=True, FailedToDemote reason
+
+#### 5. L1-DEM-006: Demote primary to secondary with array unreachable (force=true)
+- **Issue**: [#9 - Test Infrastructure Gap: Support for Array/Storage Unreachability Simulation in E2E Tests](https://github.com/nadavleva/kubernetes-csi-addons/issues/9)
+- **Root Cause**: Test infrastructure cannot simulate local storage array unavailability
+- **Expected Test Behavior**: force=true still fails when primary storage is unavailable; force parameter cannot override storage layer access requirements
+
+### Issue Summary
+
+| Issue | Title | Blocking Tests | Priority | Status |
+|-------|-------|---|----------|--------|
+| #7 | RBD mirror force promote degraded with peer unreachable | L1-PROM-004 (1 test) | **High** | 🔍 Investigating |
+| #9 | Array/Storage unreachability test infrastructure gap | L1-PROM-005, L1-PROM-006, L1-DEM-005, L1-DEM-006 (4 tests) | **Medium** | 📋 Pending Implementation |
+
+### Not Yet Implemented (Noted in matrix)
+- L1-PROM-003, L1-DEM-003, L1-DEM-004: Peer/array down scenarios (future enhancement, related to #7 and #9)
 
 ## NetworkFence capability detection
 
