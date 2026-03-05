@@ -64,7 +64,7 @@ var _ = Describe("Full DR (two clusters)", func() {
 			DeferCleanup(func() {
 				cleanupCtx := context.Background()
 				DeleteVolumeReplicationWithCleanup(cleanupCtx, cDR1, vr)
-				DeleteVolumeReplicationClass(cleanupCtx, cDR1, vrc)
+				DeleteVolumeReplicationClassWithCleanup(cleanupCtx, cDR1, vrc)
 				DeletePVCWithCleanup(cleanupCtx, cDR1, pvc)
 				DeleteNamespace(cleanupCtx, cDR1, ns1)
 				DeleteNamespace(cleanupCtx, cDR2, ns2)

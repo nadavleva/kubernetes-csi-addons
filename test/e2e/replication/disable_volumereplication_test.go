@@ -63,7 +63,7 @@ var _ = Describe("DisableVolumeReplication", func() {
 
 			DeferCleanup(func() {
 				cleanupCtx := context.Background()
-				DeleteVolumeReplicationClass(cleanupCtx, c, vrc)
+				DeleteVolumeReplicationClassWithCleanup(cleanupCtx, c, vrc)
 				DeletePVCWithCleanup(cleanupCtx, c, pvc)
 				DeleteNamespace(cleanupCtx, c, ns)
 			})
@@ -130,11 +130,11 @@ var _ = Describe("DisableVolumeReplication", func() {
 			DeferCleanup(func() {
 				cleanupCtx := context.Background()
 				DeleteVolumeReplicationWithCleanup(cleanupCtx, cDR2, vrDR2)
-				DeleteVolumeReplicationClass(cleanupCtx, cDR2, vrcDR2)
+				DeleteVolumeReplicationClassWithCleanup(cleanupCtx, cDR2, vrcDR2)
 				DeletePVCWithCleanup(cleanupCtx, cDR2, pvcDR2)
 				DeletePV(cleanupCtx, cDR2, pvDR2)
 				DeleteVolumeReplicationWithCleanup(cleanupCtx, cDR1, vrDR1)
-				DeleteVolumeReplicationClass(cleanupCtx, cDR1, vrcDR1)
+				DeleteVolumeReplicationClassWithCleanup(cleanupCtx, cDR1, vrcDR1)
 				DeletePVCWithCleanup(cleanupCtx, cDR1, pvcDR1)
 				DeleteNamespace(cleanupCtx, cDR1, ns1)
 				DeleteNamespace(cleanupCtx, cDR2, ns2)
@@ -280,7 +280,7 @@ var _ = Describe("DisableVolumeReplication", func() {
 				// Unfence to clean up properly
 				DeleteNetworkFenceWithCleanup(cleanupCtx, c, nf)
 				DeleteNetworkFenceClassWithCleanup(cleanupCtx, c, nfc)
-				DeleteVolumeReplicationClass(cleanupCtx, c, vrc)
+				DeleteVolumeReplicationClassWithCleanup(cleanupCtx, c, vrc)
 				DeletePVCWithCleanup(cleanupCtx, c, pvc)
 				DeleteNamespace(cleanupCtx, c, ns)
 			})
@@ -347,7 +347,7 @@ var _ = Describe("DisableVolumeReplication", func() {
 				// Unfence to clean up properly
 				DeleteNetworkFenceWithCleanup(cleanupCtx, c, nf)
 				DeleteNetworkFenceClassWithCleanup(cleanupCtx, c, nfc)
-				DeleteVolumeReplicationClass(cleanupCtx, c, vrc)
+				DeleteVolumeReplicationClassWithCleanup(cleanupCtx, c, vrc)
 				DeletePVCWithCleanup(cleanupCtx, c, pvc)
 				DeleteNamespace(cleanupCtx, c, ns)
 			})
@@ -395,7 +395,7 @@ var _ = Describe("DisableVolumeReplication", func() {
 
 			DeferCleanup(func() {
 				cleanupCtx := context.Background()
-				DeleteVolumeReplicationClass(cleanupCtx, c, vrc)
+				DeleteVolumeReplicationClassWithCleanup(cleanupCtx, c, vrc)
 				DeletePVCWithCleanup(cleanupCtx, c, pvc)
 				DeleteNamespace(cleanupCtx, c, ns)
 			})
@@ -461,11 +461,11 @@ var _ = Describe("DisableVolumeReplication", func() {
 			DeferCleanup(func() {
 				cleanupCtx := context.Background()
 				DeleteVolumeReplicationWithCleanup(cleanupCtx, cDR2, vrDR2)
-				DeleteVolumeReplicationClass(cleanupCtx, cDR2, vrcDR2)
+				DeleteVolumeReplicationClassWithCleanup(cleanupCtx, cDR2, vrcDR2)
 				DeletePVCWithCleanup(cleanupCtx, cDR2, pvcDR2)
 				DeletePV(cleanupCtx, cDR2, pvDR2)
 				DeleteVolumeReplicationWithCleanup(cleanupCtx, cDR1, vrDR1)
-				DeleteVolumeReplicationClass(cleanupCtx, cDR1, vrcDR1)
+				DeleteVolumeReplicationClassWithCleanup(cleanupCtx, cDR1, vrcDR1)
 				DeletePVCWithCleanup(cleanupCtx, cDR1, pvcDR1)
 				DeleteNamespace(cleanupCtx, cDR1, ns1)
 				DeleteNamespace(cleanupCtx, cDR2, ns2)

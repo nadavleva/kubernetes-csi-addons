@@ -56,7 +56,7 @@ var _ = Describe("GetVolumeReplicationInfo", func() {
 			DeferCleanup(func() {
 				cleanupCtx := context.Background()
 				DeleteVolumeReplicationWithCleanup(cleanupCtx, c, vr)
-				DeleteVolumeReplicationClass(cleanupCtx, c, vrc)
+				DeleteVolumeReplicationClassWithCleanup(cleanupCtx, c, vrc)
 				DeleteNamespace(cleanupCtx, c, ns)
 			})
 
