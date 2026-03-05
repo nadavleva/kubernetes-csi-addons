@@ -680,7 +680,7 @@ var _ = Describe("PromoteVolumeReplication", func() {
 			By("Starting L1-PROM-005: Promote secondary to primary with array unreachable (force=false)")
 			Skip(`L1-PROM-005 requires array/storage unreachable simulation not yet supported in test infrastructure.
 
-Ref: https://github.com/nadavleva/kubernetes-csi-addons/issues/8
+Ref: https://github.com/nadavleva/kubernetes-csi-addons/issues/9
 
 Prerequisites for implementation:
 1. Driver-specific storage shutdown mechanism (e.g., Ceph RBD pool offline)
@@ -702,7 +702,7 @@ Expected behavior when array is unreachable:
 			By("Starting L1-PROM-006: Promote secondary to primary with array unreachable (force=true)")
 			Skip(`L1-PROM-006 requires array/storage unreachable simulation not yet supported in test infrastructure.
 
-Ref: https://github.com/nadavleva/kubernetes-csi-addons/issues/8
+Ref: https://github.com/nadavleva/kubernetes-csi-addons/issues/9
 
 Prerequisites for implementation:
 1. Driver-specific storage shutdown mechanism (e.g., Ceph RBD pool offline)
