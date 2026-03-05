@@ -507,7 +507,7 @@ var _ = Describe("PromoteVolumeReplication", func() {
 		It("L1-PROM-004: fence peer cluster → force promote succeeds → unfence → verify stability", func() {
 			// SKIP REASON: L1-PROM-004 is skipped due to an issue with force promote in degraded RBD mirror mode.
 			// GitHub Issue: https://github.com/nadavleva/kubernetes-csi-addons/issues/7
-			// 
+			//
 			// ISSUE DESCRIPTION:
 			// When the RBD mirror is degraded (peer cluster is unreachable/fenced), the force promote operation
 			// does not transition the VolumeReplication state to Primary or Unknown as expected. Instead, the VR
@@ -680,6 +680,8 @@ var _ = Describe("PromoteVolumeReplication", func() {
 			By("Starting L1-PROM-005: Promote secondary to primary with array unreachable (force=false)")
 			Skip(`L1-PROM-005 requires array/storage unreachable simulation not yet supported in test infrastructure.
 
+Ref: https://github.com/nadavleva/kubernetes-csi-addons/issues/8
+
 Prerequisites for implementation:
 1. Driver-specific storage shutdown mechanism (e.g., Ceph RBD pool offline)
    - NetworkFence blocks network access to peer; does NOT block local storage access
@@ -699,6 +701,8 @@ Expected behavior when array is unreachable:
 		It("L1-PROM-006: [SCAFFOLD] array unreachable simulation required", func() {
 			By("Starting L1-PROM-006: Promote secondary to primary with array unreachable (force=true)")
 			Skip(`L1-PROM-006 requires array/storage unreachable simulation not yet supported in test infrastructure.
+
+Ref: https://github.com/nadavleva/kubernetes-csi-addons/issues/8
 
 Prerequisites for implementation:
 1. Driver-specific storage shutdown mechanism (e.g., Ceph RBD pool offline)
