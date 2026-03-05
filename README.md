@@ -96,36 +96,6 @@ See [Testing Architecture](docs/testing-architecture.md) for a full overview. Su
 | **Controller integration** | Replication Storage Suite, CSI-Addons Suite | Use [envtest](https://pkg.go.dev/sigs.k8s.io/controller-runtime/pkg/envtest) (or real cluster with `USE_EXISTING_CLUSTER=true`). Controllers are exercised with **fake** clients—no real gRPC to sidecars. |
 | **Replication E2E** | Layer-1 VR scenarios in `test/e2e/replication` | Create VolumeReplication/VolumeReplicationClass on a live cluster; require controller and CSI driver with replication support. See [Replication E2E Suite](docs/testing/replication-e2e-suite.md). |
 
-### Replication E2E Test Suite Status
-
-**Total Implementation (as of March 5, 2026):**
-- **37 Total Specs** across 6 test categories
-  - **32 Specs Passed** ✅ (~56 test cases executed)
-  - **5 Specs Skipped** ⏭️ (blocked on GitHub issues #7 and #9)
-- **Test Duration**: ~31 minutes
-
-**Breakdown by Test Category:**
-
-| Category | Specs | Test Cases | Status | Notes |
-|----------|-------|-----------|--------|-------|
-| **EnableVolumeReplication** (L1-E-001 to L1-E-009) | 9 | 20 | ✅ Complete | Each Enable spec includes GetVolumeReplicationInfo assertions |
-| **DisableVolumeReplication** (L1-DIS-001 to L1-DIS-012) | 9 | 14 | ✅ Complete | Covers active disable, idempotent disable, peer unreachable, force disable |
-| **GetVolumeReplicationInfo** (integrated with Enable/Disable) | 1 | 1 | ✅ Complete | Tested as part of Enable/Disable specs |
-| **PromoteVolumeReplication** (L1-PROM-001,002,007,008) | 4 | 4 | ✅ Complete | Healthy promotion, idempotent, with I/O workload, force promotion |
-| **DemoteVolumeReplication** (L1-DEM-001,002,007,008) | 4 | 4 | ✅ Complete | Healthy demotion, idempotent, with I/O workload, force demotion |
-| **Full DR (two clusters)** | 1 | 1 | ✅ Complete | Multi-cluster setup verification |
-| **Skipped Tests** | 5 | 5 | ⏭️ Blocked | L1-PROM-004 (issue #7), L1-PROM-005/006, L1-DEM-005/006 (issue #9) |
-| **TOTAL** | **37** | **~56** | **32 Passed / 5 Skipped** | |
-
-**Skipped Tests with GitHub Issue References:**
-- **Issue #7** (1 test): [RBD mirror force promote fails when degraded with peer unreachable](https://github.com/nadavleva/kubernetes-csi-addons/issues/7)
-  - L1-PROM-004: Force promote with peer unreachable
-- **Issue #9** (4 tests): [Test Infrastructure Gap - Array/Storage unreachability simulation](https://github.com/nadavleva/kubernetes-csi-addons/issues/9)
-  - L1-PROM-005, L1-PROM-006: Promote with array unreachable
-  - L1-DEM-005, L1-DEM-006: Demote with array unreachable
-
-For detailed test specifications and implementation notes, see [Replication E2E Suite Documentation](docs/testing/replication-e2e-suite.md).
-
 **Run tests:**
 
 - All tests (envtest, no cluster): `make test`
