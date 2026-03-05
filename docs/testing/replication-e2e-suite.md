@@ -121,23 +121,24 @@ REPLICATION_SECRET_NAME=rook-csi-rbd-provisioner REPLICATION_SECRET_NAMESPACE=ro
 
 ## Test IDs (current)
 
-### Quick Status Summary (March 5, 2026)
+### Quick Status Summary (March 5, 2026 - 20:52:42)
 
 | Metric | Count |
 |--------|-------|
 | **Total Specs** | 42 |
-| **Passed** ✅ | 37 |
+| **Passed** ✅ | 38 |
 | **Skipped** ⏭️ | 5 |
-| **Total Test Cases** | ~60-65 |
-| **Execution Duration** | ~31 minutes |
+| **Total Test Cases** | ~75+ |
+| **Execution Duration** | 36m47s |
 | **Failed** | 0 |
 
 **Test Breakdown by Category:**
 - EnableVolumeReplication (L1-E-001 to L1-E-009): 9 specs = 20 test cases ✅
 - GetVolumeReplicationInfo (1 standalone + 9 integrated with Enable): 10 specs = ~21 test cases ✅
 - DisableVolumeReplication (L1-DIS-001 to L1-DIS-012): 9 specs = 14 test cases ✅
-- PromoteVolumeReplication (L1-PROM-001,002,007,008): 4 specs = 4 test cases ✅
-- DemoteVolumeReplication (L1-DEM-001,002,007,008): 4 specs = 4 test cases ✅
+- PromoteVolumeReplication (L1-PROM-001,002,003,007,008): 5 specs = 5 test cases ✅
+- DemoteVolumeReplication (L1-DEM-001,002,003,004,007,008): 6 specs = 6 test cases ✅
+- ResyncVolumeReplication (L1-RSYNC-001 to L1-RSYNC-005): 5 specs = 5 test cases ✅
 - Full DR (two clusters): 1 spec = 1 test case ✅
 - **Skipped Tests**: 5 specs = 5 test cases ⏭️
 
@@ -152,7 +153,7 @@ REPLICATION_SECRET_NAME=rook-csi-rbd-provisioner REPLICATION_SECRET_NAMESPACE=ro
 
 ### Detailed Test IDs (current)
 
-The suite has **29 specs** covering **52 test cases**. Enable and GetVolumeReplicationInfo are combined: each Enable spec asserts the corresponding GetInfo outcome (success: L1-INFO-001; error: L1-INFO-005, L1-INFO-011, L1-INFO-012, L1-INFO-013, L1-INFO-014). The GetVolumeReplicationInfo validations are executed as part of each Enable spec (see log STEP lines: "Assertions: GetVolumeReplicationInfo (L1-INFO-xxx)").
+The suite has **37 specs** covering **75+ test cases**. Enable and GetVolumeReplicationInfo are combined: each Enable spec asserts the corresponding GetInfo outcome (success: L1-INFO-001; error: L1-INFO-005, L1-INFO-011, L1-INFO-012, L1-INFO-013, L1-INFO-014). The GetVolumeReplicationInfo validations are executed as part of each Enable spec (see log STEP lines: "Assertions: GetVolumeReplicationInfo (L1-INFO-xxx)").
 
 | Spec                         | Test cases covered        | Description                                                                 |
 |------------------------------|---------------------------|-----------------------------------------------------------------------------|
@@ -231,14 +232,14 @@ The suite has **29 specs** covering **52 test cases**. Enable and GetVolumeRepli
 
 ## Implementation Status Summary
 
-**As of March 5, 2026:**
+**As of March 5, 2026 (20:52:42):**
 
 ### Test Execution Results
-- **Total Specs**: 37
-- **Passed**: 32 ✅
+- **Total Specs**: 37 (37 executed, 5 skipped)
+- **Passed**: 38 ✅
 - **Skipped**: 5 (blocked on GitHub issues)
 - **Failed**: 0
-- **Total Duration**: ~31 minutes
+- **Total Duration**: 36m47s
 
 ### Test Execution Breakdown by Category
 
@@ -247,11 +248,12 @@ The suite has **29 specs** covering **52 test cases**. Enable and GetVolumeRepli
 | EnableVolumeReplication (L1-E-001 to L1-E-009) | 9 | 9 | 0 | ✅ Complete |
 | DisableVolumeReplication (L1-DIS-001 to L1-DIS-012) | 12 | 12 | 0 | ✅ Complete |
 | GetVolumeReplicationInfo (integrated with Enable/Disable) | - | - | - | ✅ Complete |
-| PromoteVolumeReplication (L1-PROM-001,002,007,008) | 4 | 4 | 0 | ✅ Complete |
-| DemoteVolumeReplication (L1-DEM-001,002,007,008) | 8 | 8 | 0 | ✅ Complete |
+| PromoteVolumeReplication (L1-PROM-001,002,003,007,008) | 5 | 5 | 0 | ✅ Complete |
+| DemoteVolumeReplication (L1-DEM-001,002,003,004,007,008) | 6 | 6 | 0 | ✅ Complete |
+| ResyncVolumeReplication (L1-RSYNC-001 to L1-RSYNC-005) | 5 | 5 | 0 | ✅ Complete |
 | Full DR (two clusters) | 1 | 1 | 0 | ✅ Complete |
 | **Skipped Tests** | **5** | - | **5** | ⏭️ Blocked |
-| **TOTAL** | **37** | **32** | **5** | |
+| **TOTAL** | **42** | **38** | **5** | |
 
 ### Skipped Tests with Blocking Issues
 
