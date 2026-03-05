@@ -19,8 +19,8 @@
 #                          for VolumeReplicationClass (e.g. rook-csi-rbd-provisioner in rook-ceph).
 #   REPLICATION_POLL_TIMEOUT - Seconds to wait for Replicating=True (default 300). Increase if
 #                          journal mode or second VR times out.
-#   REPLICATION_TEST_TIMEOUT - Go test timeout for entire suite (default 30m). Increase if suite
-#                          hits "test timed out after 10m0s" (e.g. 45m or 60m).
+#   REPLICATION_TEST_TIMEOUT - Go test timeout for entire suite (default 45m). Increase if suite
+#                          hits "test timed out after 10m0s" (e.g. 60m).
 #   GINKGO_VERBOSE          - Set to "vv" for maximal verbosity (skipped/pending in output).
 #                             Default: "v" (verbose) plus show-node-events and trace on failure.
 #
@@ -45,7 +45,7 @@ mkdir -p "${LOGS_DIR}"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 LOG_FILE="${LOGS_DIR}/replication-e2e_${TIMESTAMP}.log"
 INSTALL_CRDS="${INSTALL_CRDS:-false}"
-REPLICATION_TEST_TIMEOUT="${REPLICATION_TEST_TIMEOUT:-30m}"
+REPLICATION_TEST_TIMEOUT="${REPLICATION_TEST_TIMEOUT:-45m}"
 GINKGO_VERBOSE="${GINKGO_VERBOSE:-v}"
 EXIT_CODE=1
 CLEANUP_ON_EXIT=0
@@ -88,7 +88,7 @@ echo "Current context: $(kubectl config current-context 2>/dev/null || echo 'non
 echo ""
 
 echo "[2/5] Test env (pass-through to tests):"
-echo "  REPLICATION_TEST_TIMEOUT=${REPLICATION_TEST_TIMEOUT:-30m} (go test -timeout)"
+echo "  REPLICATION_TEST_TIMEOUT=${REPLICATION_TEST_TIMEOUT:-45m} (go test -timeout)"
 echo "  REPLICATION_POLL_TIMEOUT=${REPLICATION_POLL_TIMEOUT:-<default 300>}"
 echo "  REPLICATION_SECRET_NAME=${REPLICATION_SECRET_NAME:-<unset, create per-ns secret>}"
 echo "  REPLICATION_SECRET_NAMESPACE=${REPLICATION_SECRET_NAMESPACE:-<unset>}"
