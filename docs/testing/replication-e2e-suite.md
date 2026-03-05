@@ -230,6 +230,105 @@ The suite has **37 specs** covering **75+ test cases**. Enable and GetVolumeRepl
 
 **E2E-003 (NetworkFence peer unreachable):** Uses NetworkFenceClass and NetworkFence to block the storage node so EnableVolumeReplication fails; then sets `spec.fenceState: Unfenced` to unfence (deletion no longer triggers UnfenceClusterNetwork). Recovery may take ~2 minutes after unfence (RBD mirror reconnect, controller retry). The test checks that the **driver supports NetworkFence** using a **cached capability check** performed once at BeforeSuite initialization (see [NetworkFence capability detection](#networkfence-capability-detection) below); if not supported, it skips gracefully. CIDRs come from env `FENCE_CIDRS`, CSIAddonsNode, or node InternalIPs. For **Ceph CSI (Rook)**, the test adds `clusterID` to NetworkFenceClass. **L1-E-003 cleanup:** `DeleteNetworkFenceWithCleanup` unfences first (sets fenceState Unfenced), then deletes the NetworkFence, so CIDRs are unblocked before VR/PVC cleanup even on failure or interrupt.
 
+## Network Fenced Node vs. Unreachable Storage Array
+
+These represent fundamentally different failure modes in a disaster recovery scenario. Understanding the distinction is critical for comprehensive testing:
+
+### NetworkFence: Peer Cluster Unreachable (Implemented ✅)
+
+**What it simulates:** Network partition between peer clusters / between local cluster and peer storage backend
+
+**Implementation:** Uses CSI-Addons NetworkFence CRD to block specific network CIDRs by adding iptables rules or network policies
+- Blocks network packets from/to specified IP ranges
+- **Local storage remains fully accessible** to the local cluster
+- **Peer cluster is network-isolated** but its storage is still online
+- Used by: **L1-E-003, L1-E-005, L1-DIS-005, L1-DIS-006, L1-PROM-003, L1-DEM-003, L1-DEM-004, L1-RSYNC-003**
+
+**Example Scenario (Ceph RBD):**
+```
+Cluster 1 (Primary)              Network Partition              Cluster 2 (Secondary)
+├─ Local Storage: ✅ Online      ╱════════════════╲             ├─ Local Storage: ✅ Online
+├─ Can read/write local volumes  ║ NetworkFence   ║              ├─ Can read/write local volumes
+├─ Cannot reach Cluster 2        ║ Blocks CIDRs   ║              ├─ Cannot reach Cluster 1
+└─ RBD mirror sees peer down     ╲════════════════╱              └─ RBD mirror sees peer down
+```
+
+**Expected Behavior:**
+- PromoteVolume RPC **succeeds** (only requires local storage access, not peer coordination)
+- DemoteVolume RPC **succeeds** (only requires local storage access)
+- But with `force=false`, operations may wait/retry expecting peer recovery
+- Mirror status shows "degraded" but operations can proceed
+- After unfencing, peer reconnects and mirror resynchronizes
+
+---
+
+### Storage Array Unreachable: Local Storage Backend Offline (Not Yet Implemented ❌)
+
+**What it simulates:** Local storage backend becomes unavailable (e.g., Ceph cluster down, storage array power failure, network to storage controller lost)
+
+**Implementation:** Requires mechanism to make local storage backend inaccessible (see [Issue #9](https://github.com/nadavleva/kubernetes-csi-addons/issues/9) for implementation options)
+- **Cannot execute any storage operations** on local volumes
+- **Network to peer cluster may be UP** (peer can be reached)
+- **CSI driver returns storage unavailability errors** for all operations
+- Blocked tests: **L1-PROM-005, L1-PROM-006, L1-DEM-005, L1-DEM-006**
+
+**Example Scenario (Ceph RBD):**
+```
+Cluster 1 (Primary)              Ceph Storage Cluster Down
+├─ Local Storage: ❌ OFFLINE     ╱═════════════════════╲
+├─ Cannot read/write volumes     ║ No local storage      ║
+├─ CAN reach Cluster 2 network   ║ I/O errors on all ops║
+├─ RBD driver returns errors     ║ No backend available  ║
+└─ Mirror status unknown         ╲═════════════════════╱
+
+Cluster 2 (Secondary)
+├─ Local Storage: ✅ Online (but cannot sync)
+├─ Can reach Cluster 1 network
+└─ Replication blocked waiting for primary storage
+```
+
+**Expected Behavior:**
+- PromoteVolume RPC **FAILS** (cannot access primary volume to read/coordinate state)
+- DemoteVolume RPC **FAILS** (cannot access volume to perform state transition)
+- VR Status shows: `Degraded=True`, `FailedToPromote` / `FailedToDemote` reason
+- **force=true parameter CANNOT override storage layer failures** (unlike peer unreachability)
+- Operations remain failed until storage recovers
+
+---
+
+### Quick Comparison Table
+
+| Aspect | NetworkFence (Peer Unreachable) | Storage Array Unreachable |
+|--------|----------------------------------|---------------------------|
+| **What's blocked** | Network between clusters | Local storage backend |
+| **Local storage access** | ✅ Available | ❌ Unavailable |
+| **CSI operations** | May succeed (don't need peer) | Fail (need local storage) |
+| **PromoteVolume RPC** | ✅ Can execute (local only) | ❌ Fails (storage I/O error) |
+| **DemoteVolume RPC** | ✅ Can execute (local only) | ❌ Fails (storage I/O error) |
+| **force=true effect** | May allow skip peer coordination | ❌ Cannot override storage failure |
+| **Mirror status** | Degraded (peer down) | Unknown/error (no backend) |
+| **Recovery** | Unfence CRD / restore network | Restore storage backend |
+| **Duration of test** | Minutes | Until storage recovered |
+| **Test status** | ✅ Implemented (L1-E-003, L1-DIS-005, L1-DIS-006, etc.) | ❌ Not implemented (Issue #9) |
+
+---
+
+### Why Both Scenarios Matter
+
+**NetworkFence tests** validate the controller's ability to:
+- Detect peer unreachability
+- Proceed with local operations gracefully
+- Recover automatically when network restores
+- Prevent split-brain situations
+
+**Storage array unreachability tests** validate the controller's ability to:
+- Fail safely when storage backend is unreachable
+- Report appropriate error conditions in VR status
+- NOT attempt retries that cannot succeed
+- Distinguish between recoverable (network) vs. unrecoverable (storage) failures
+
+Together, they ensure comprehensive failure scenario coverage for disaster recovery workflows.
+
 ## Implementation Status Summary
 
 **As of March 5, 2026 (20:52:42):**
