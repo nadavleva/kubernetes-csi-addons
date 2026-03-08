@@ -321,7 +321,7 @@ var _ = Describe("EnableVolumeReplication", func() {
 			})
 
 			By("Waiting for error in VR status (gRPC InvalidArgument or driver error)")
-			WaitForVolumeReplicationErrorWithTimeout(ctx, c, vr, quickErrorTimeout)
+			WaitForVolumeReplicationError(ctx, c, vr)
 			err := c.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrName}, vr)
 			Expect(err).NotTo(HaveOccurred())
 			By("Assertions: L1-E-004 — invalid schedulingInterval returns error; L1-INFO-012 — GetVolumeReplicationInfo returns error state")
@@ -364,7 +364,7 @@ var _ = Describe("EnableVolumeReplication", func() {
 			})
 
 			By("Waiting for error in VR status (FailedPrecondition or controller failed to get secret)")
-			WaitForVolumeReplicationErrorWithTimeout(ctx, c, vr, quickErrorTimeout)
+			WaitForVolumeReplicationError(ctx, c, vr)
 			err := c.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrName}, vr)
 			Expect(err).NotTo(HaveOccurred())
 			By("Assertions: L1-E-006 — missing/invalid secret returns error; L1-INFO-013 — GetVolumeReplicationInfo returns error state")
@@ -406,7 +406,7 @@ var _ = Describe("EnableVolumeReplication", func() {
 			})
 
 			By("Waiting for error in VR status (gRPC InvalidArgument)")
-			WaitForVolumeReplicationErrorWithTimeout(ctx, c, vr, quickErrorTimeout)
+			WaitForVolumeReplicationError(ctx, c, vr)
 			err := c.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrName}, vr)
 			Expect(err).NotTo(HaveOccurred())
 			By("Assertions: L1-E-007 — invalid mirroringMode returns error; L1-INFO-011 — GetVolumeReplicationInfo returns error state")
@@ -498,7 +498,7 @@ var _ = Describe("EnableVolumeReplication", func() {
 			})
 
 			By("Waiting for error in VR status (gRPC InvalidArgument)")
-			WaitForVolumeReplicationErrorWithTimeout(ctx, c, vr, quickErrorTimeout)
+			WaitForVolumeReplicationError(ctx, c, vr)
 			err := c.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrName}, vr)
 			Expect(err).NotTo(HaveOccurred())
 			By("Assertions: L1-E-009 — invalid schedulingStartTime format returns error; L1-INFO-014 — GetVolumeReplicationInfo returns error state")

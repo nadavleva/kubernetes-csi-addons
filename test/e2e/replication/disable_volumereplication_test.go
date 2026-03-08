@@ -270,7 +270,7 @@ var _ = Describe("DisableVolumeReplication", func() {
 			vr := CreateVolumeReplication(ctx, c, nsName, vrName, vrcName, pvc.Name, replicationv1alpha1.Primary)
 
 			By("Waiting for VR to report error due to blocked peer")
-			WaitForVolumeReplicationError(ctx, c, vr)
+			WaitForVolumeReplicationErrorWithTimeout(ctx, c, vr, quickErrorTimeout)
 
 			By("Attempting to delete VR while peer unreachable (disable should fail gracefully)")
 			DeleteVolumeReplicationWithCleanup(ctx, c, vr)

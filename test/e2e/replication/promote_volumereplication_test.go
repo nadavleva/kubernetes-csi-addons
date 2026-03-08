@@ -443,7 +443,7 @@ var _ = Describe("PromoteVolumeReplication", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			By("[DR2] Waiting for VR to report error (FailedToPromote or peer unreachable)")
-			WaitForVolumeReplicationError(ctx, cDR2, vrDR2)
+			WaitForVolumeReplicationErrorWithTimeout(ctx, cDR2, vrDR2, quickErrorTimeout)
 			err = cDR2.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrDR2.Name}, vrDR2)
 			Expect(err).NotTo(HaveOccurred())
 
