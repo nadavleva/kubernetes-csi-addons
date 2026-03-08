@@ -50,6 +50,7 @@ const (
 	defaultReplicationPollSec  = 300
 	pvcBindTimeout             = 120 * time.Second
 	cleanupWaitTimeout         = 45 * time.Second
+	quickErrorTimeout          = 30 * time.Second // for WaitForVolumeReplicationErrorQuick (validation/parameter errors)
 
 	// mirrorImageReadyDelay is the time to wait for rbd-mirror to create the mirror image on the
 	// secondary cluster after primary replication is enabled. Used by CreateSecondaryPVCFromPrimary.
@@ -496,12 +497,12 @@ func WaitForVolumeReplicationReplicatingOrCompletedUntil(ctx context.Context, c 
 	return false
 }
 
-// WaitForVolumeReplicationError waits until the VR has any error condition or message indicating failure.
+// WaitForVolumeReplicationErrorWithTimeout waits until the VR has any error condition or message indicating failure.
 // Uses hasVolumeReplicationErrorCondition, which is aligned with csi-addons controller behavior (error/degraded
 // set with ConditionTrue; see docs/testing/replication-e2e-suite.md and the comment on hasVolumeReplicationErrorCondition).
-func WaitForVolumeReplicationError(ctx context.Context, c client.Client, vr *replicationv1alpha1.VolumeReplication) {
+// timeout can be getReplicationPollTimeout() for default, or quickErrorTimeout for validation/parameter errors.
+func WaitForVolumeReplicationErrorWithTimeout(ctx context.Context, c client.Client, vr *replicationv1alpha1.VolumeReplication, timeout time.Duration) {
 	key := client.ObjectKeyFromObject(vr)
-	timeout := getReplicationPollTimeout()
 	Eventually(func() bool {
 		err := c.Get(ctx, key, vr)
 		if err != nil {
@@ -510,6 +511,13 @@ func WaitForVolumeReplicationError(ctx context.Context, c client.Client, vr *rep
 		return hasVolumeReplicationErrorCondition(vr)
 	}, timeout, pollInterval).Should(BeTrue(),
 		"VolumeReplication %s/%s should report an error", vr.Namespace, vr.Name)
+}
+
+// WaitForVolumeReplicationError waits until the VR has any error condition or message indicating failure.
+// Uses the default poll timeout from REPLICATION_POLL_TIMEOUT (or 300s). For validation/parameter errors
+// that manifest quickly, use WaitForVolumeReplicationErrorWithTimeout(ctx, c, vr, quickErrorTimeout) instead.
+func WaitForVolumeReplicationError(ctx context.Context, c client.Client, vr *replicationv1alpha1.VolumeReplication) {
+	WaitForVolumeReplicationErrorWithTimeout(ctx, c, vr, getReplicationPollTimeout())
 }
 
 // HasVolumeReplicationErrorCondition is an exported wrapper for hasVolumeReplicationErrorCondition.

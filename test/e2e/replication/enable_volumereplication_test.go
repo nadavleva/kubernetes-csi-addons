@@ -268,10 +268,10 @@ var _ = Describe("EnableVolumeReplication", func() {
 				DeleteNamespace(cleanupCtx, c, ns)
 			})
 
-			// Second VR: many controllers never set status on a duplicate VR (idempotent no-op). Wait up to 2m for success
-			// (covers 1m pool; 5m pool would need longer but would make suite hit 10m timeout). If no success, require no error.
-			By("Waiting for second VR Replicating=True or Completed=True (up to 2m); if none, require no error (idempotent)")
-			gotSuccess := WaitForVolumeReplicationReplicatingOrCompletedUntil(ctx, c, vr2, 2*time.Minute, func(v *replicationv1alpha1.VolumeReplication) {
+			// Second VR: many controllers never set status on a duplicate VR (idempotent no-op). Wait up to 20s for success.
+			// If controller processes it, should reach Completed=True within seconds; if not, controller treats as idempotent no-op.
+			By("Waiting for second VR Replicating=True or Completed=True (up to 20s); if none, require no error (idempotent)")
+			gotSuccess := WaitForVolumeReplicationReplicatingOrCompletedUntil(ctx, c, vr2, 20*time.Second, func(v *replicationv1alpha1.VolumeReplication) {
 				fmt.Fprintf(GinkgoWriter, "  [VR] %s\n", FormatVRStatus(v))
 			})
 			err = c.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vr2Name}, vr2)
@@ -321,7 +321,7 @@ var _ = Describe("EnableVolumeReplication", func() {
 			})
 
 			By("Waiting for error in VR status (gRPC InvalidArgument or driver error)")
-			WaitForVolumeReplicationError(ctx, c, vr)
+			WaitForVolumeReplicationErrorWithTimeout(ctx, c, vr, quickErrorTimeout)
 			err := c.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrName}, vr)
 			Expect(err).NotTo(HaveOccurred())
 			By("Assertions: L1-E-004 — invalid schedulingInterval returns error; L1-INFO-012 — GetVolumeReplicationInfo returns error state")
@@ -364,7 +364,7 @@ var _ = Describe("EnableVolumeReplication", func() {
 			})
 
 			By("Waiting for error in VR status (FailedPrecondition or controller failed to get secret)")
-			WaitForVolumeReplicationError(ctx, c, vr)
+			WaitForVolumeReplicationErrorWithTimeout(ctx, c, vr, quickErrorTimeout)
 			err := c.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrName}, vr)
 			Expect(err).NotTo(HaveOccurred())
 			By("Assertions: L1-E-006 — missing/invalid secret returns error; L1-INFO-013 — GetVolumeReplicationInfo returns error state")
@@ -406,7 +406,7 @@ var _ = Describe("EnableVolumeReplication", func() {
 			})
 
 			By("Waiting for error in VR status (gRPC InvalidArgument)")
-			WaitForVolumeReplicationError(ctx, c, vr)
+			WaitForVolumeReplicationErrorWithTimeout(ctx, c, vr, quickErrorTimeout)
 			err := c.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrName}, vr)
 			Expect(err).NotTo(HaveOccurred())
 			By("Assertions: L1-E-007 — invalid mirroringMode returns error; L1-INFO-011 — GetVolumeReplicationInfo returns error state")
@@ -498,7 +498,7 @@ var _ = Describe("EnableVolumeReplication", func() {
 			})
 
 			By("Waiting for error in VR status (gRPC InvalidArgument)")
-			WaitForVolumeReplicationError(ctx, c, vr)
+			WaitForVolumeReplicationErrorWithTimeout(ctx, c, vr, quickErrorTimeout)
 			err := c.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrName}, vr)
 			Expect(err).NotTo(HaveOccurred())
 			By("Assertions: L1-E-009 — invalid schedulingStartTime format returns error; L1-INFO-014 — GetVolumeReplicationInfo returns error state")
