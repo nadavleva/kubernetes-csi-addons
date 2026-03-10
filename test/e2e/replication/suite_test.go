@@ -144,26 +144,82 @@ var _ = ReportAfterSuite("Replication E2E detailed summary", func(report types.R
 			_, _ = fmt.Fprintf(GinkgoWriter, "  - %s\n", r)
 		}
 	}
-	_, _ = fmt.Fprintf(GinkgoWriter, "\n--- Test case execution details ---\n")
+	// Collect specs by state, filter out lifecycle hooks and internal specs
+	var passedSpecs, failedSpecs, skippedSpecs []*types.SpecReport
 	for i, spec := range report.SpecReports {
-		idx := i + 1
-		stateStr := spec.State.String()
-		dur := spec.RunTime.Round(time.Millisecond)
-		_, _ = fmt.Fprintf(GinkgoWriter, "%d. [%s] %s (duration: %s)\n", idx, stateStr, spec.FullText(), dur)
-		if spec.Failed() && spec.Failure.Message != "" {
-			msg := strings.TrimSpace(spec.Failure.Message)
-			if len(msg) > 500 {
-				msg = msg[:500] + "..."
+		fullText := strings.TrimSpace(spec.FullText())
+		// Skip:
+		// - specs with empty FullText (internal setup/capability checks)
+		// - BeforeSuite/AfterSuite/BeforeEach/AfterEach (lifecycle hooks)
+		if fullText == "" ||
+			strings.Contains(fullText, "[BeforeSuite]") ||
+			strings.Contains(fullText, "[AfterSuite]") ||
+			strings.Contains(fullText, "[BeforeEach]") ||
+			strings.Contains(fullText, "[AfterEach]") ||
+			strings.HasPrefix(fullText, "TOP-LEVEL") {
+			continue
+		}
+		specPtr := &report.SpecReports[i]
+		switch spec.State {
+		case types.SpecStatePassed:
+			passedSpecs = append(passedSpecs, specPtr)
+		case types.SpecStateSkipped, types.SpecStatePending:
+			skippedSpecs = append(skippedSpecs, specPtr)
+		default:
+			// All failure states
+			if spec.Failed() {
+				failedSpecs = append(failedSpecs, specPtr)
 			}
-			_, _ = fmt.Fprintf(GinkgoWriter, "   Failure: %s\n", strings.ReplaceAll(msg, "\n", "\n   "))
 		}
 	}
-	passed := report.SpecReports.CountWithState(types.SpecStatePassed)
-	failed := report.SpecReports.CountWithState(types.SpecStateFailureStates)
-	skipped := report.SpecReports.CountWithState(types.SpecStateSkipped)
-	pending := report.SpecReports.CountWithState(types.SpecStatePending)
-	_, _ = fmt.Fprintf(GinkgoWriter, "\n--- Counts ---\n")
-	_, _ = fmt.Fprintf(GinkgoWriter, "Passed: %d | Failed: %d | Skipped: %d | Pending: %d\n", passed, failed, skipped, pending)
+
+	// Print failed tests first
+	if len(failedSpecs) > 0 {
+		_, _ = fmt.Fprintf(GinkgoWriter, "\n--- FAILED (%d) ---\n", len(failedSpecs))
+		for i, spec := range failedSpecs {
+			dur := spec.RunTime.Round(time.Millisecond)
+			_, _ = fmt.Fprintf(GinkgoWriter, "%d. [%s] %s (duration: %s)\n", i+1, spec.State.String(), spec.FullText(), dur)
+			if spec.Failure.Message != "" {
+				msg := strings.TrimSpace(spec.Failure.Message)
+				if len(msg) > 500 {
+					msg = msg[:500] + "..."
+				}
+				_, _ = fmt.Fprintf(GinkgoWriter, "   Failure: %s\n", strings.ReplaceAll(msg, "\n", "\n   "))
+			}
+		}
+	}
+
+	// Print passed tests
+	if len(passedSpecs) > 0 {
+		_, _ = fmt.Fprintf(GinkgoWriter, "\n--- PASSED (%d) ---\n", len(passedSpecs))
+		for i, spec := range passedSpecs {
+			dur := spec.RunTime.Round(time.Millisecond)
+			_, _ = fmt.Fprintf(GinkgoWriter, "%d. %s (duration: %s)\n", i+1, spec.FullText(), dur)
+		}
+	}
+
+	// Print skipped/pending tests
+	if len(skippedSpecs) > 0 {
+		_, _ = fmt.Fprintf(GinkgoWriter, "\n--- SKIPPED/PENDING (%d) ---\n", len(skippedSpecs))
+		for i, spec := range skippedSpecs {
+			_, _ = fmt.Fprintf(GinkgoWriter, "%d. [%s] %s\n", i+1, spec.State.String(), spec.FullText())
+		}
+	}
+
+	// Count pending separately from skipped
+	var pendingCount int
+	for _, spec := range skippedSpecs {
+		if spec.State == types.SpecStatePending {
+			pendingCount++
+		}
+	}
+	skippedCount := len(skippedSpecs) - pendingCount
+	passed := len(passedSpecs)
+	failed := len(failedSpecs)
+	skipped := skippedCount
+	pending := pendingCount
+	_, _ = fmt.Fprintf(GinkgoWriter, "\n--- Summary ---\n")
+	_, _ = fmt.Fprintf(GinkgoWriter, "Passed: %d | Failed: %d | Skipped: %d | Pending: %d | Total: %d\n", passed, failed, skipped, pending, passed+failed+skipped+pending)
 	_, _ = fmt.Fprintf(GinkgoWriter, "%s\n", sep)
 })
 

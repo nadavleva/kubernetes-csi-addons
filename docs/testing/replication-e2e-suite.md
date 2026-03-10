@@ -121,35 +121,38 @@ REPLICATION_SECRET_NAME=rook-csi-rbd-provisioner REPLICATION_SECRET_NAMESPACE=ro
 
 ## Test IDs (current)
 
-### Quick Status Summary (March 5, 2026 - 20:52:42)
+### Quick Status Summary (March 10, 2026 - 15:22:51)
 
 | Metric | Count |
 |--------|-------|
 | **Total Specs** | 42 |
-| **Passed** ✅ | 38 |
-| **Skipped** ⏭️ | 5 |
+| **Passed** ✅ | 1 |
+| **Skipped** ⏭️ | 41 |
 | **Total Test Cases** | ~75+ |
-| **Execution Duration** | 36m47s |
+| **Execution Duration** | 39.4s (partial run) |
 | **Failed** | 0 |
 
 **Test Breakdown by Category:**
-- EnableVolumeReplication (L1-E-001 to L1-E-009): 9 specs = 20 test cases ✅
-- GetVolumeReplicationInfo (1 standalone + 9 integrated with Enable): 10 specs = ~21 test cases ✅
-- DisableVolumeReplication (L1-DIS-001 to L1-DIS-012): 9 specs = 14 test cases ✅
-- PromoteVolumeReplication (L1-PROM-001,002,003,007,008): 5 specs = 5 test cases ✅
-- DemoteVolumeReplication (L1-DEM-001,002,003,004,007,008): 6 specs = 6 test cases ✅
-- ResyncVolumeReplication (L1-RSYNC-001 to L1-RSYNC-005): 5 specs = 5 test cases ✅
-- Full DR (two clusters): 1 spec = 1 test case ✅
-- **Skipped Tests**: 5 specs = 5 test cases ⏭️
+- EnableVolumeReplication (L1-E-001 to L1-E-009): 9 specs = ⏭️ skipped
+- GetVolumeReplicationInfo (1 standalone + 9 integrated with Enable): 10 specs = ⏭️ skipped
+- DisableVolumeReplication (L1-DIS-001 to L1-DIS-012): 12 specs = ⏭️ skipped
+- PromoteVolumeReplication (L1-PROM-001,002,003,007,008): 5 specs = ⏭️ skipped
+- DemoteVolumeReplication (L1-DEM-001,002,003,004,007,008): 6 specs = ✅ 1 passed (L1-DEM-001)
+- ResyncVolumeReplication (L1-RSYNC-001 to L1-RSYNC-005): 5 specs = ⏭️ skipped
+- Full DR (two clusters): 1 spec = ⏭️ skipped
+
+**Note:** The March 10 test run was a single-test run (using `GINKGO_FOCUS="L1-DEM-001"`). Full suite run from March 5 showed **38 passed, 5 skipped, 0 failed** with 36m47s duration.
 
 **Skipped Tests Blocking Issues:**
 - **Issue #7** ([RBD mirror force promote fails when RBD mirror is degraded with peer unreachable](https://github.com/nadavleva/kubernetes-csi-addons/issues/7)): 1 test blocked
   - L1-PROM-004: Force promote secondary to primary with peer unreachable
   - **Problem**: VR state remains Secondary instead of transitioning to Primary when RBD mirror is degraded
-- **Issue #9** ([Test Infrastructure Gap: Array/Storage unreachability simulation](https://github.com/nadavleva/kubernetes-csi-addons/issues/9)): 4 tests blocked
+- **Issue #9** ([Test Infrastructure Gap: Array/Storage unreachability simulation via iptables on CSI client nodes](https://github.com/nadavleva/kubernetes-csi-addons/issues/9)): 4 tests blocked
   - L1-PROM-005, L1-PROM-006: Promote with array/storage unreachable
   - L1-DEM-005, L1-DEM-006: Demote with array/storage unreachable
   - **Problem**: Test infrastructure cannot simulate local storage array becoming unreachable (different from NetworkFence which blocks peer network)
+  - **Implementation approach**: Block iptables rules on CSI client nodes to simulate storage array unavailability
+  - **Status**: Issue created March 10, 2026
 
 ### Detailed Test IDs (current)
 
@@ -391,13 +394,322 @@ Together, they ensure comprehensive failure scenario coverage for disaster recov
 
 ### Issue Summary
 
-| Issue | Title | Blocking Tests | Priority | Status |
-|-------|-------|---|----------|--------|
-| #7 | RBD mirror force promote degraded with peer unreachable | L1-PROM-004 (1 test) | **High** | 🔍 Investigating |
-| #9 | Array/Storage unreachability test infrastructure gap | L1-PROM-005, L1-PROM-006, L1-DEM-005, L1-DEM-006 (4 tests) | **Medium** | 📋 Pending Implementation |
+| Issue | Title | Blocking Tests | Priority | Status | Last Updated |
+|-------|-------|---|----------|--------|--------------|
+| #7 | RBD mirror force promote degraded with peer unreachable | L1-PROM-004 (1 test) | **High** | 🔍 Investigating | March 10, 2026 |
+| #9 | Array/Storage unreachability test infrastructure gap (iptables fault injection on CSI client nodes) | L1-PROM-005, L1-PROM-006, L1-DEM-005, L1-DEM-006 (4 tests) | **Medium** | 📋 Pending Implementation | March 10, 2026 |
+| #10 | Dangling RBD images after failed promote/demote operations | Related to L1-PROM-001, L1-DEM-001, L1-PROM-005/6, L1-DEM-005/6 | **Medium** | 📋 Pending Investigation | March 10, 2026 |
+
+### Issue Details
+
+#### Issue #7: RBD Mirror Force Promote Degraded with Peer Unreachable
+- **Description**: When RBD mirror is degraded (peer unreachable) and force promote is attempted on secondary, VR state remains Secondary instead of transitioning to Primary
+- **Affected Test**: L1-PROM-004
+- **Root Cause**: RBD mirror daemon behavior in degraded mode may not support forced promotion
+- **Investigation Items**:
+  - Verify RBD mirror supports force promote in degraded state
+  - Check Ceph configuration requirements
+  - May require driver-level changes or updates to Ceph CSI
+
+#### Issue #9: Array/Storage Unreachability Test Infrastructure Gap
+- **Description**: Test infrastructure cannot simulate local storage array becoming unreachable. Current infrastructure only supports NetworkFence (blocks peer cluster network).
+- **Affected Tests**: L1-PROM-005, L1-PROM-006, L1-DEM-005, L1-DEM-006
+- **Implementation Approach**: Use iptables blocking rules on CSI client nodes to simulate storage backend unavailability
+- **Expected Behavior**: CSI driver should report storage unavailable errors; operations fail with appropriate error codes
+- **Implementation Gap**: Requires mechanism to:
+  1. Identify CSI client node hosting the provisioner sidecar
+  2. Block iptables rules for storage backend IP ranges
+  3. Trigger failover/failure scenarios
+  4. Clean up iptables rules after test completion
+
+#### Issue #10: Dangling RBD Images After Failed Operations
+- **Description**: When promote/demote operations fail or are interrupted, orphaned RBD mirror images may remain on the storage backend
+- **Affected Tests**: All promote/demote tests, especially those with storage unreachability (#9)
+- **Problem Areas**:
+  - Secondary PVC creation from primary's mirrored RBD image may fail mid-operation
+  - Failed promote/demote leaves mirror in inconsistent state
+  - Cleanup script does not remove dangling RBD images from Ceph
+- **Impact**: Storage waste, test resource cleanup failures, potential mirror corruption
+- **Required Actions**:
+  1. Enhance cleanup script to identify and remove dangling RBD images
+  2. Query Ceph cluster for orphaned mirror images
+  3. Force-remove images with proper permissions
+  4. Add validation to ensure no dangling images after each test
 
 ### Not Yet Implemented (Noted in matrix)
 - L1-PROM-003, L1-DEM-003, L1-DEM-004: Peer/array down scenarios (future enhancement, related to #7 and #9)
+- L1-INFO-008 (standalone): Non-existent volume error handling (not integrated with Enable tests yet)
+
+## Dangling RBD Images: Lifecycle and Cleanup
+
+RBD images created during VolumeReplication test operations can become "dangling" (orphaned) under several failure scenarios. This section documents the issue, its causes, and cleanup strategies.
+
+### What Are Dangling Images?
+
+**Dangling images** are RBD mirror images left behind after a replication operation fails, is interrupted, or cleans up incompletely. They are not attached to any PVC or active replication relationship, but they consume storage and may block future operations.
+
+### Lifecycle: How Dangling Images Are Created
+
+**Normal Healthy Operations:**
+1. Test creates PVC on primary cluster
+2. VolumeReplication enables mirroring on primary
+3. RBD mirror daemon creates mirror image on secondary Ceph cluster
+4. Secondary PVC created from mirror image (backup/restore pattern)
+5. Promote/demote transitions RBD state
+6. Test cleanup deletes PVCs, which triggers RBD image deletion
+
+**Failure Scenario 1: Secondary PVC Creation Fails**
+```
+[Primary Cluster]                    [Secondary Cluster]
+PVC created ✅          →  RBD mirror image created ✅
+                        →  Secondary PVC creation ❌ (fails mid-operation)
+                        
+Result: Orphaned RBD mirror image remains on secondary
+```
+
+**Failure Scenario 2: Cleanup Incomplete**
+```
+VR/PVC deletion requested ✅
+PVC finalizers removed ✅
+PVC deleted from K8s ✅
+                        →  RBD image deletion ❌ (network error, timeout)
+
+Result: RBD image persists on storage backend
+```
+
+**Failure Scenario 3: Test Interrupted (Timeout, Panic, Kill)**
+```
+Test running...
+    ├─ Created resources on both clusters
+    ├─ Enabled replication
+    ├─ Created secondary PVC from mirror
+    │
+    └─ INTERRUPTED (timeout, panic, or ^C)
+    
+Cleanup handler runs but may not complete fully
+Result: Partial cleanup, dangling images remain
+```
+
+### Storage Impact
+
+**Per-test resource overhead:**
+- Primary volume: 1-2 GiB (test volume)
+- Secondary mirror: 1-2 GiB (mirrored copy)
+- RBD snapshots (if any): 0-1 GiB
+
+**For failed tests with dangling images:**
+- Orphaned mirror image: 1-2 GiB per orphaned volume
+- Failed test run (42 tests): Up to 84+ GiB of dangling images if all fail
+- E2E test suite runs (daily): Hundreds of GiB accumulation risk
+
+### Identifying Dangling Images
+
+**On the Ceph cluster:**
+
+```bash
+# List all RBD images (including orphaned ones)
+rbd ls --pool <pool-name>
+
+# Check mirror status for an image
+rbd mirror image status <pool>/<image>
+
+# Identify images NOT referenced by any K8s PVC
+kubectl get pvc -A -o jsonpath='{.items[*].spec.volumeName}' | xargs -I {} \
+  kubectl get pv {} -o jsonpath='{.spec.csi.volumeHandle}'
+```
+
+**For test-specific images:**
+```bash
+# E2E test images follow naming pattern: pvc-<random-suffix> or vr-<random-suffix>
+rbd ls --pool <pool-name> | grep -E 'pvc-|vr-'
+
+# Check for images older than test run duration (e.g., 1 hour old)
+rbd info --pool <pool-name> <image> | grep 'create_timestamp'
+```
+
+### Current Cleanup Strategy (Limitations)
+
+**Current cleanup (in `clean-replication-e2e-resources.sh`):**
+1. Deletes K8s PVCs (triggers RBD deletion)
+2. Waits for RBD deletion via K8s event watching
+3. Removes VR/VRC finalizers if stuck
+4. **Does NOT directly query Ceph for orphaned images**
+
+**Limitations:**
+- Relies on K8s-initiated RBD deletion (fails if communication broken)
+- No fallback to direct Ceph cleanup
+- No validation that RBD images were actually deleted
+- No post-cleanup audit of orphaned images
+
+### Enhanced Cleanup Strategy (Proposed)
+
+**Enhanced cleanup should:**
+
+1. **Pre-cleanup audit:**
+   ```bash
+   # Record RBD images before test
+   rbd ls --pool <pool> > images_before.txt
+   ```
+
+2. **Standard K8s cleanup:**
+   - Delete resources as normal (current approach)
+   - Wait for finalizers to complete
+
+3. **Post-cleanup validation:**
+   ```bash
+   # Record RBD images after test cleanup
+   rbd ls --pool <pool> > images_after.txt
+   
+   # Identify dangling images (present after, but created during test)
+   comm -13 images_before.txt images_after.txt > dangling_images.txt
+   ```
+
+4. **Force cleanup of dangling images:**
+   ```bash
+   # Remove dangling mirror images
+   for image in $(cat dangling_images.txt); do
+     rbd mirror image disable $image          # Stop mirroring
+     rbd rm --pool <pool> $image              # Delete image
+   done
+   ```
+
+5. **Validation:**
+   - Re-list RBD images after force cleanup
+   - Fail test if dangling images remain
+   - Log warning if cleanup had to force-remove images
+
+### Test Cleanup Enhancements Required
+
+**Updates needed to `clean-replication-e2e-resources.sh`:**
+
+```bash
+#!/bin/bash
+# Enhanced cleanup with dangling image detection
+
+POOL="${CEPH_POOL:-rbd}"
+NAMESPACE_PREFIX="e2e-replication-"
+
+# 1. Record RBD images before cleanup
+echo "[PRE] Listing RBD images before cleanup..."
+rbd ls --pool $POOL > /tmp/images_pre_cleanup.txt
+
+# 2. Perform standard K8s cleanup
+echo "[CLEANUP] Removing K8s resources..."
+for ns in $(kubectl get ns -o name | grep $NAMESPACE_PREFIX); do
+  kubectl delete namespace $ns --wait=true --timeout=60s || true
+done
+
+# 3. Record RBD images after K8s cleanup
+echo "[POST] Listing RBD images after K8s cleanup..."
+rbd ls --pool $POOL > /tmp/images_post_cleanup.txt
+
+# 4. Identify dangling images (images we created but still exist)
+echo "[DETECT] Checking for dangling images..."
+DANGLING=$(comm -23 /tmp/images_post_cleanup.txt /tmp/images_pre_cleanup.txt | \
+           grep -E 'pvc-|vr-' || true)
+
+if [ -z "$DANGLING" ]; then
+  echo "✅ No dangling images found"
+else
+  echo "⚠️  WARNING: Found dangling images:"
+  echo "$DANGLING"
+  
+  # 5. Force cleanup dangling images
+  echo "[CLEANUP] Removing dangling RBD images..."
+  for image in $DANGLING; do
+    echo "  Removing $image..."
+    rbd mirror image disable --force --pool $POOL $image 2>/dev/null || true
+    rbd rm --pool $POOL $image || echo "  ❌ Failed to remove $image"
+  done
+  
+  # 6. Validate cleanup
+  echo "[VALIDATE] Checking if dangling images were removed..."
+  rbd ls --pool $POOL > /tmp/images_final.txt
+  REMAINING=$(comm -23 /tmp/images_final.txt /tmp/images_pre_cleanup.txt | \
+              grep -E 'pvc-|vr-' || true)
+  
+  if [ -z "$REMAINING" ]; then
+    echo "✅ All dangling images cleaned up"
+  else
+    echo "❌ ERROR: Dangling images still present after cleanup:"
+    echo "$REMAINING"
+    exit 1
+  fi
+fi
+```
+
+### Test Isolation Best Practices
+
+**To minimize dangling image accumulation:**
+
+1. **Use unique naming per test run:**
+   ```bash
+   # Each test run gets a unique suffix
+   RUN_ID=$(date +%s)_$(openssl rand -hex 4)
+   
+   # PVCs, VRs use RUN_ID: pvc-$RUN_ID-001, vr-$RUN_ID-001
+   ```
+
+2. **Enable strict cleanup validation:**
+   ```bash
+   # After each test, validate no orphaned images were created
+   test_cleanup() {
+     local namespace=$1
+     local run_id=$2
+     
+     # Delete K8s resources
+     kubectl delete namespace $namespace
+     
+     # Check for orphaned images with this run_id
+     local orphaned=$(rbd ls --pool $POOL | grep $run_id || true)
+     if [ -n "$orphaned" ]; then
+       echo "ERROR: Found orphaned images for run $run_id: $orphaned"
+       return 1
+     fi
+   }
+   ```
+
+3. **Timeout-based cleanup:**
+   ```bash
+   # Find and remove images older than X hours (likely from failed runs)
+   rbd ls --pool $POOL | while read img; do
+     age_hours=$(( ($(date +%s) - $(rbd info --pool $POOL $img | \
+                    grep create_timestamp | awk '{print $3}')) / 3600 ))
+     if [ $age_hours -gt 24 ] && [[ $img =~ pvc-|vr- ]]; then
+       echo "Removing old dangling image: $img (age: ${age_hours}h)"
+       rbd rm --force --pool $POOL $img
+     fi
+   done
+   ```
+
+### Monitoring and Alerting
+
+**Recommended monitoring additions:**
+
+1. **Pre-test Ceph audit:**
+   - Record baseline orphaned image count
+   - Fail suite if orphaned count exceeds threshold (e.g., 10)
+
+2. **Per-test resource tracking:**
+   - Log PVC/VR creation and deletion timestamps
+   - Compare against RBD image creation/deletion events
+
+3. **Post-suite report:**
+   ```
+   ========================================
+   TEST SUITE CLEANUP REPORT
+   ========================================
+   RBD Images Created:        120
+   RBD Images Deleted:        116
+   Dangling Images:           4
+   Orphaned Storage:          8 GiB
+   
+   Dangling images:
+   - pvc-abc123-001 (224 MiB, 2h old)
+   - mirror-xyz789-001 (1.5 GiB, 1h old)
+   ...
+   ========================================
+   ```
 
 ## NetworkFence capability detection
 

@@ -129,6 +129,19 @@ func GetTestEnv() TestEnv {
 	}
 }
 
+// Logf is a unified logging wrapper that prefixes all log lines with ISO 8601 timestamp.
+// Format: YYYY-MM-DD HH:MM:SS.mmm [prefix] message
+// Usage examples:
+//
+//	Logf("[CLEANUP]", "Starting deletion: %s/%s", ns, name)
+//	Logf("[DEBUG]", "State: %s", state)
+//	Logf("[INFO]", "Operation completed")
+func Logf(prefix, format string, args ...interface{}) {
+	ts := time.Now().Format("2006-01-02 15:04:05.000")
+	msg := fmt.Sprintf(format, args...)
+	_, _ = fmt.Fprintf(ginkgo.GinkgoWriter, "%s %s %s\n", ts, prefix, msg)
+}
+
 // UniqueNamespace returns a unique namespace name for e2e tests.
 func UniqueNamespace() string {
 	return fmt.Sprintf("e2e-replication-%s", uuid.NewUUID()[:8])
@@ -140,7 +153,7 @@ func UniqueNamespace() string {
 func SkipIfNotFullDR(testID, description string) {
 	env := GetTestEnv()
 	if !env.FullDR {
-		_, _ = fmt.Fprintf(ginkgo.GinkgoWriter, "[%s] Skipping: %s (DR1_CONTEXT and DR2_CONTEXT must both be set)\n", testID, description)
+		Logf(fmt.Sprintf("[%s]", testID), "Skipping: %s (DR1_CONTEXT and DR2_CONTEXT must both be set)", description)
 		ginkgo.Skip(fmt.Sprintf("%s requires DR1_CONTEXT and DR2_CONTEXT to be set", testID))
 	}
 }
@@ -658,14 +671,12 @@ func DeleteVolumeReplicationWithCleanup(ctx context.Context, c client.Client, vr
 	}
 	key := client.ObjectKeyFromObject(vr)
 	startTime := time.Now()
-	timestamp := startTime.Format("2006-01-02 15:04:05.000")
-	fmt.Fprintf(ginkgo.GinkgoWriter, "[CLEANUP %s] Starting VolumeReplication deletion: %s/%s\n", timestamp, vr.Namespace, vr.Name)
+	Logf("[CLEANUP]", "Starting VolumeReplication deletion: %s/%s", vr.Namespace, vr.Name)
 
 	// Remove finalizer first to avoid 45-second deletion timeout
 	err := c.Get(ctx, key, vr)
 	if err == nil && containsString(vr.Finalizers, volumeReplicationFinalizer) {
-		timestamp := time.Now().Format("2006-01-02 15:04:05.000")
-		fmt.Fprintf(ginkgo.GinkgoWriter, "[CLEANUP %s] Removing finalizer from VolumeReplication: %s/%s\n", timestamp, vr.Namespace, vr.Name)
+		Logf("[CLEANUP]", "Removing finalizer from VolumeReplication: %s/%s", vr.Namespace, vr.Name)
 		RemoveFinalizerFromVR(ctx, c, vr)
 	}
 
@@ -676,16 +687,14 @@ func DeleteVolumeReplicationWithCleanup(ctx context.Context, c client.Client, vr
 		err := c.Get(ctx, key, vr)
 		if errors.IsNotFound(err) {
 			elapsed := time.Since(startTime)
-			timestamp := time.Now().Format("2006-01-02 15:04:05.000")
-			fmt.Fprintf(ginkgo.GinkgoWriter, "[CLEANUP %s] VolumeReplication deleted successfully: %s/%s (took %v)\n", timestamp, vr.Namespace, vr.Name, elapsed)
+			Logf("[CLEANUP]", "VolumeReplication deleted successfully: %s/%s (took %v)", vr.Namespace, vr.Name, elapsed)
 			return
 		}
 		time.Sleep(pollInterval)
 	}
 	// Still present after timeout (unexpected since we removed finalizer)
 	elapsed := time.Since(startTime)
-	timestamp = time.Now().Format("2006-01-02 15:04:05.000")
-	fmt.Fprintf(ginkgo.GinkgoWriter, "[CLEANUP %s] WARNING: VolumeReplication still present after %v timeout (total time: %v): %s/%s\n", timestamp, cleanupWaitTimeout, elapsed, vr.Namespace, vr.Name)
+	Logf("[CLEANUP]", "WARNING: VolumeReplication still present after %v timeout (total time: %v): %s/%s", cleanupWaitTimeout, elapsed, vr.Namespace, vr.Name)
 }
 
 // DeletePVCWithCleanup deletes the PVC by removing its finalizer first,
@@ -696,14 +705,12 @@ func DeletePVCWithCleanup(ctx context.Context, c client.Client, pvc *corev1.Pers
 	}
 	key := client.ObjectKeyFromObject(pvc)
 	startTime := time.Now()
-	timestamp := startTime.Format("2006-01-02 15:04:05.000")
-	fmt.Fprintf(ginkgo.GinkgoWriter, "[CLEANUP %s] Starting PersistentVolumeClaim deletion: %s/%s\n", timestamp, pvc.Namespace, pvc.Name)
+	Logf("[CLEANUP]", "Starting PersistentVolumeClaim deletion: %s/%s", pvc.Namespace, pvc.Name)
 
 	// Remove finalizer first to avoid 45-second deletion timeout
 	err := c.Get(ctx, key, pvc)
 	if err == nil && containsString(pvc.Finalizers, pvcReplicationFinalizer) {
-		timestamp := time.Now().Format("2006-01-02 15:04:05.000")
-		fmt.Fprintf(ginkgo.GinkgoWriter, "[CLEANUP %s] Removing finalizer from PersistentVolumeClaim: %s/%s\n", timestamp, pvc.Namespace, pvc.Name)
+		Logf("[CLEANUP]", "Removing finalizer from PersistentVolumeClaim: %s/%s", pvc.Namespace, pvc.Name)
 		RemoveFinalizerFromPVC(ctx, c, pvc)
 	}
 
@@ -714,16 +721,14 @@ func DeletePVCWithCleanup(ctx context.Context, c client.Client, pvc *corev1.Pers
 		err := c.Get(ctx, key, pvc)
 		if errors.IsNotFound(err) {
 			elapsed := time.Since(startTime)
-			timestamp := time.Now().Format("2006-01-02 15:04:05.000")
-			fmt.Fprintf(ginkgo.GinkgoWriter, "[CLEANUP %s] PersistentVolumeClaim deleted successfully: %s/%s (took %v)\n", timestamp, pvc.Namespace, pvc.Name, elapsed)
+			Logf("[CLEANUP]", "PersistentVolumeClaim deleted successfully: %s/%s (took %v)", pvc.Namespace, pvc.Name, elapsed)
 			return
 		}
 		time.Sleep(pollInterval)
 	}
 	// Still present after timeout (unexpected since we removed finalizer)
 	elapsed := time.Since(startTime)
-	timestamp = time.Now().Format("2006-01-02 15:04:05.000")
-	fmt.Fprintf(ginkgo.GinkgoWriter, "[CLEANUP %s] WARNING: PersistentVolumeClaim still present after %v timeout (total time: %v): %s/%s\n", timestamp, cleanupWaitTimeout, elapsed, pvc.Namespace, pvc.Name)
+	Logf("[CLEANUP]", "WARNING: PersistentVolumeClaim still present after %v timeout (total time: %v): %s/%s", cleanupWaitTimeout, elapsed, pvc.Namespace, pvc.Name)
 }
 
 // DeleteVolumeReplication deletes a VR and ignores NotFound.
@@ -752,14 +757,14 @@ func DeleteVolumeReplicationClassWithCleanup(ctx context.Context, c client.Clien
 	}
 	key := client.ObjectKeyFromObject(vrc)
 	startTime := time.Now()
-	fmt.Fprintf(ginkgo.GinkgoWriter, "[CLEANUP] Starting VolumeReplicationClass deletion: %s/%s\n", vrc.Namespace, vrc.Name)
+	Logf("[CLEANUP]", "Starting VolumeReplicationClass deletion: %s/%s", vrc.Namespace, vrc.Name)
 	_ = c.Delete(ctx, vrc)
 	deadline := time.Now().Add(cleanupWaitTimeout)
 	for time.Now().Before(deadline) {
 		err := c.Get(ctx, key, vrc)
 		if errors.IsNotFound(err) {
 			elapsed := time.Since(startTime)
-			fmt.Fprintf(ginkgo.GinkgoWriter, "[CLEANUP] VolumeReplicationClass deleted successfully: %s/%s (took %v)\n", vrc.Namespace, vrc.Name, elapsed)
+			Logf("[CLEANUP]", "VolumeReplicationClass deleted successfully: %s/%s (took %v)", vrc.Namespace, vrc.Name, elapsed)
 			return
 		}
 		time.Sleep(pollInterval)
@@ -767,7 +772,7 @@ func DeleteVolumeReplicationClassWithCleanup(ctx context.Context, c client.Clien
 	// VRC still present after timeout; log warning but continue
 	// (VRC may have finalizers that take longer or be stuck)
 	elapsed := time.Since(startTime)
-	fmt.Fprintf(ginkgo.GinkgoWriter, "[CLEANUP] WARNING: VolumeReplicationClass %s/%s still present after %v timeout (total elapsed: %v)\n", vrc.Namespace, vrc.Name, cleanupWaitTimeout, elapsed)
+	Logf("[CLEANUP]", "WARNING: VolumeReplicationClass %s/%s still present after %v timeout (total elapsed: %v)", vrc.Namespace, vrc.Name, cleanupWaitTimeout, elapsed)
 }
 
 // DeletePVC deletes a PVC and ignores NotFound.
