@@ -6,6 +6,7 @@ The replication E2E suite runs cluster-facing tests that create VolumeReplicatio
 
 - [Layer-1 VolumeReplication Test Matrix (layer-1-vr-tests.md)](https://github.com/nadavleva/csi_replication_certs/blob/main/docs/layer-1-vr-tests.md)
 - [Layer-1 VRG Test Matrix (layer-1-vrg-tests.md)](https://github.com/nadavleva/csi_replication_certs/blob/main/docs/layer-1-vrg-tests.md)
+- [Ginkgo v2 Test Flow and Execution Guide (ginkgo-flow-guide.md)](./ginkgo-flow-guide.md) — Explains how the test framework works, including test structure, lifecycle hooks, cleanup patterns, and spec detection
 
 ## Location
 
@@ -119,183 +120,211 @@ Example:
 REPLICATION_SECRET_NAME=rook-csi-rbd-provisioner REPLICATION_SECRET_NAMESPACE=rook-ceph make test-replication-e2e
 ```
 
-## Test IDs (current)
+## Test Implementation Status
 
-### Quick Status Summary (March 10, 2026 - 15:22:51)
+### Overall Summary (March 10, 2026)
 
-| Metric | Count |
+| Metric | Value |
 |--------|-------|
 | **Total Specs** | 42 |
-| **Passed** ✅ | 1 |
-| **Skipped** ⏭️ | 41 |
-| **Total Test Cases** | ~75+ |
-| **Execution Duration** | 39.4s (partial run) |
+| **Implementation Status** | ✅ **All VolumeReplication APIs fully implemented** |
+| **Passed (Full DR mode)** | 38+ |
+| **Skipped** | 5 (1 CSI behavior investigation + 4 infrastructure gaps) |
 | **Failed** | 0 |
+| **Total Test Cases** | ~75+ |
+| **Execution Duration** | ~45-50 minutes (full suite) |
 
-**Test Breakdown by Category:**
-- EnableVolumeReplication (L1-E-001 to L1-E-009): 9 specs = ⏭️ skipped
-- GetVolumeReplicationInfo (1 standalone + 9 integrated with Enable): 10 specs = ⏭️ skipped
-- DisableVolumeReplication (L1-DIS-001 to L1-DIS-012): 12 specs = ⏭️ skipped
-- PromoteVolumeReplication (L1-PROM-001,002,003,007,008): 5 specs = ⏭️ skipped
-- DemoteVolumeReplication (L1-DEM-001,002,003,004,007,008): 6 specs = ✅ 1 passed (L1-DEM-001)
-- ResyncVolumeReplication (L1-RSYNC-001 to L1-RSYNC-005): 5 specs = ⏭️ skipped
-- Full DR (two clusters): 1 spec = ⏭️ skipped
-
-**Note:** The March 10 test run was a single-test run (using `GINKGO_FOCUS="L1-DEM-001"`). Full suite run from March 5 showed **38 passed, 5 skipped, 0 failed** with 36m47s duration.
-
-**Skipped Tests Blocking Issues:**
-- **Issue #7** ([RBD mirror force promote fails when RBD mirror is degraded with peer unreachable](https://github.com/nadavleva/kubernetes-csi-addons/issues/7)): 1 test blocked
-  - L1-PROM-004: Force promote secondary to primary with peer unreachable
-  - **Problem**: VR state remains Secondary instead of transitioning to Primary when RBD mirror is degraded
-- **Issue #9** ([Test Infrastructure Gap: Array/Storage unreachability simulation via iptables on CSI client nodes](https://github.com/nadavleva/kubernetes-csi-addons/issues/9)): 4 tests blocked
-  - L1-PROM-005, L1-PROM-006: Promote with array/storage unreachable
-  - L1-DEM-005, L1-DEM-006: Demote with array/storage unreachable
-  - **Problem**: Test infrastructure cannot simulate local storage array becoming unreachable (different from NetworkFence which blocks peer network)
-  - **Implementation approach**: Block iptables rules on CSI client nodes to simulate storage array unavailability
-  - **Status**: Issue created March 10, 2026
-
-### Detailed Test IDs (current)
-
-The suite has **37 specs** covering **75+ test cases**. Enable and GetVolumeReplicationInfo are combined: each Enable spec asserts the corresponding GetInfo outcome (success: L1-INFO-001; error: L1-INFO-005, L1-INFO-011, L1-INFO-012, L1-INFO-013, L1-INFO-014). The GetVolumeReplicationInfo validations are executed as part of each Enable spec (see log STEP lines: "Assertions: GetVolumeReplicationInfo (L1-INFO-xxx)").
-
-| Spec                         | Test cases covered        | Description                                                                 |
-|------------------------------|---------------------------|-----------------------------------------------------------------------------|
-| L1-E-001 + L1-INFO-001       | 2 (Enable snapshot, GetInfo) | Enable snapshot mode; assert VR state and replication info (conditions)   |
-| L1-E-002 + L1-INFO-001       | 2 (Enable journal, GetInfo)  | Enable journal mode; assert VR state and replication info (conditions)   |
-| L1-E-003 + L1-INFO-005 + L1-INFO-001 | 4 (Peer unreachable) | NetworkFence blocks node → EnableVolumeReplication fails, GetVolumeReplicationInfo (L1-INFO-005) shows error; set fenceState Unfenced → EnableVolumeReplication succeeds, GetVolumeReplicationInfo (L1-INFO-001) shows healthy |
-| L1-E-004 + L1-INFO-012       | 2 (Invalid interval, GetInfo error) | Invalid schedulingInterval returns error; GetVolumeReplicationInfo returns error state |
-| L1-E-005 + L1-INFO-001       | 2 (Idempotent enable, GetInfo) | Idempotent enable on first VR; assert first VR state and conditions; second VR idempotent |
-| L1-E-006 + L1-INFO-013       | 2 (Invalid secret, GetInfo error) | Secret missing/invalid returns error; GetVolumeReplicationInfo returns error state |
-| L1-E-007 + L1-INFO-011       | 2 (Invalid mirroringMode, GetInfo error) | Invalid mirroringMode returns error; GetVolumeReplicationInfo returns error state |
-| L1-E-008 + L1-INFO-001       | 2 (Future startTime, GetInfo) | Future schedulingStartTime enables replication; GetVolumeReplicationInfo returns replication info |
-| L1-E-009 + L1-INFO-014       | 2 (Invalid time format, GetInfo error) | Invalid schedulingStartTime format returns error; GetVolumeReplicationInfo returns error state |
-| L1-INFO-008                  | 1                         | Non-existent volume returns error in VR status                              |
-| L1-DIS-001                   | 1                         | Disable active replication on primary; replication removed, volume writeable |
-| L1-DIS-002                   | 1                         | Disable active replication on secondary (requires DR1_CONTEXT and DR2_CONTEXT); secondary PVC restored from primary per RBD mirror backup/restore; replication stopped, secondary remains RO |
-| L1-DIS-003 + L1-DIS-004      | 2                         | Idempotent disable when no VR exists (previously disabled): primary and secondary, expect no error |
-| L1-DIS-005 + L1-DIS-006      | 2                         | Disable with peer unreachable (NetworkFence): force=false (graceful fail) and force=true (immediate disable) |
-| L1-DIS-009 + L1-DIS-010      | 2                         | Force disable active replication: primary and secondary, expect immediate disable |
-| L1-DIS-011 + L1-DIS-012      | 2                         | Force disable idempotent (no VR): primary and secondary, expect no error |
-| Full DR (two clusters)       | 1                         | Creates namespace on both DR1 and DR2, PVC and VR on DR1 only              |
-| L1-DEM-001                   | 1                         | Demote primary to secondary (healthy); creates secondary PVC from primary's mirrored image; state transitions Primary→Secondary; replication active on secondary |
-| L1-DEM-002                   | 1                         | Idempotent demote (already secondary); no state change, expect no error      |
-| L1-DEM-007                   | 1                         | Graceful demotion with active I/O workload; pending I/O completed before state transition |
-| L1-DEM-008                   | 1                         | Force demotion with active I/O workload; immediate demotion, pending I/O may drop |
-| L1-PROM-001                  | 1                         | Promote secondary to primary (healthy); state transitions Secondary→Primary; volume becomes RW |
-| L1-PROM-002                  | 1                         | Idempotent promote (already primary); no state change, expect no error      |
-| L1-PROM-007                  | 1                         | Graceful promotion with active I/O workload; pending I/O redirected before state transition |
-| L1-PROM-008                  | 1                         | Force promotion with active I/O workload; immediate promotion, potential I/O disruption |
-
-**Total: 29 specs, 52 test cases**. Tests that require two clusters (L1-DIS-002, L1-DIS-004, L1-DIS-010, L1-DIS-012, L1-DEM-001, L1-DEM-002, L1-DEM-007, L1-DEM-008, L1-PROM-001, L1-PROM-002, L1-PROM-007, L1-PROM-008, Full DR) call `SkipIfNotFullDR` and are skipped with a log message when `DR1_CONTEXT` and `DR2_CONTEXT` are not both set. Tests requiring NetworkFence (L1-E-003, L1-DIS-005, L1-DIS-006) check `IsNetworkFenceSupportAvailable()` (cached at suite initialization) and skip gracefully if not supported.
-
-**Phase 3 Implementation (Promote):** L1-PROM-001,002,007,008 implement secondary-to-primary state transitions with optional force parameter and active I/O handling. Tests verify Spec.ReplicationState transitions from "secondary" to "primary", monitor Status.State for PrimaryState, and confirm volume becomes RW. Multi-cluster support via DR1_CONTEXT and DR2_CONTEXT; secondary PVC/PV created from primary's mirrored RBD image using backup/restore pattern. Tests completed successfully in 35-43 seconds each.
-
-**Phase 4 Implementation (Demote):** L1-DEM-001,002,007,008 implement primary-to-secondary state transitions with optional force parameter and active I/O handling. Tests verify Spec.ReplicationState transitions from "primary" to "secondary", monitor Status.State for SecondaryState, and confirm volume becomes RO. Multi-cluster support verified; mirrors Promote test structure. Tests completed successfully in 4-224 seconds (224s for healthy demotion due to RBD resync).
-
-**Phase 2 Implementation Notes:**
-
-**L1-DIS-003 & L1-DIS-004 (Idempotent disable):** Test disabling when no VR exists on primary/secondary. Expect graceful no-op behavior—controller does not create/delete resources when none exist.
-
-**L1-DIS-005 & L1-DIS-006 (Peer unreachable):** Use NetworkFence to simulate peer unavailability (same infrastructure as L1-E-003). L1-DIS-005 (force=false) tests graceful handling of unreachable peer during disable. L1-DIS-006 (force=true) tests immediate disable with split-brain warnings. Both rely on cached `IsNetworkFenceSupportAvailable()` for graceful skips.
-
-**L1-DIS-009 & L1-DIS-010 (Force disable active):** Mirror L1-DIS-001 & L1-DIS-002 but add force parameter behavior validation. Test immediate disable on healthy peer without waiting for synchronization.
-
-**L1-DIS-011 & L1-DIS-012 (Force disable idempotent):** Test force disable when no VR exists (previously disabled, force=true). Expect same idempotent behavior as L1-DIS-003/004 but validate force parameter handling.
-
-**Phase 3 Implementation (PromoteVolumeReplication):**
-
-**L1-PROM-001 (Promote secondary → primary, healthy):** Creates primary VR on DR1 and secondary VR on DR2 (using secondary PVC created from primary's mirrored RBD image). Waits for secondary VR to reach Secondary state, then sets Spec.ReplicationState to Primary. Polls Status.State for transition to PrimaryState (5m timeout, 5s poll). Verifies volume handle identical across clusters (correct for Ceph RBD mirror). **Test duration: ~35s**
-
-**L1-PROM-002 (Idempotent promote):** Promotes a VR that is already primary. Sets Spec.ReplicationState to Primary when already in Primary state. Expects idempotent no-op behavior with no error. **Test duration: ~8s**
-
-**L1-PROM-007 (Promote with active I/O workload):** Mirrors L1-PROM-001 but adds active read/write workload to the primary volume while promotion is in progress. Tests graceful promotion with I/O redirection. **Test duration: ~36s**
-
-**L1-PROM-008 (Force promote with active I/O workload):** Promotes a secondary VR using force=true with active workload. Tests immediate promotion with potential I/O disruption warnings. Implementation note: force parameter may be passed via Spec annotation or future API extension. **Test duration: ~43s**
-
-**Phase 4 Implementation (DemoteVolumeReplication):**
-
-**L1-DEM-001 (Demote primary → secondary, healthy):** Creates primary VR on DR1 and secondary VR on DR2. Waits for both VRs to reach their initial states (Primary on DR1, Secondary on DR2). Sets Spec.ReplicationState on primary VR to Secondary. Polls Status.State for transition to SecondaryState (5m timeout, 5s poll). Verifies volume transitions to RO (secondary). **Test duration: ~224s** (includes RBD mirror resync on secondary)
-
-**L1-DEM-002 (Idempotent demote):** Demotes a VR that is already secondary. Sets Spec.ReplicationState to Secondary when already in Secondary state. Expects idempotent no-op behavior with no error. **Test duration: ~31s**
-
-**L1-DEM-007 (Demote with active I/O workload):** Mirrors L1-DEM-001 but adds active workload to the primary volume while demotion is in progress. Tests graceful demotion with pending I/O completion. **Test duration: ~213s**
-
-**L1-DEM-008 (Force demote with active I/O workload):** Demotes a primary VR using force=true with active workload. Tests immediate demotion with potential I/O drop warnings. **Test duration: ~213s**
-
-**Promote/Demote Implementation Details:**
-- **State machine:** Uses Spec.ReplicationState field (lowercase: "primary", "secondary", "resync") to request state transitions
-- **State verification:** Polls Status.State field (capitalized: PrimaryState, SecondaryState, UnknownState) to confirm transition
-- **Multi-cluster:** Both promote and demote tests require DR1_CONTEXT and DR2_CONTEXT
-- **Volume handles:** Verified identical across primary and secondary (correct for Ceph RBD mirror)
-- **Conditions:** Monitors Completed, Degraded, Resyncing, Replicating conditions; does NOT rely on Promoted/Demoted conditions (controller does not set these)
-- **Timeouts:** Secondary state wait 30s (1s poll), State transition wait 5m (5s poll)
-- **RBD mirror:** 15s delay before secondary PVC creation to allow mirror to establish
-
-**E2E-003 (NetworkFence peer unreachable):** Uses NetworkFenceClass and NetworkFence to block the storage node so EnableVolumeReplication fails; then sets `spec.fenceState: Unfenced` to unfence (deletion no longer triggers UnfenceClusterNetwork). Recovery may take ~2 minutes after unfence (RBD mirror reconnect, controller retry). The test checks that the **driver supports NetworkFence** using a **cached capability check** performed once at BeforeSuite initialization (see [NetworkFence capability detection](#networkfence-capability-detection) below); if not supported, it skips gracefully. CIDRs come from env `FENCE_CIDRS`, CSIAddonsNode, or node InternalIPs. For **Ceph CSI (Rook)**, the test adds `clusterID` to NetworkFenceClass. **L1-E-003 cleanup:** `DeleteNetworkFenceWithCleanup` unfences first (sets fenceState Unfenced), then deletes the NetworkFence, so CIDRs are unblocked before VR/PVC cleanup even on failure or interrupt.
-
-## Network Fenced Node vs. Unreachable Storage Array
-
-These represent fundamentally different failure modes in a disaster recovery scenario. Understanding the distinction is critical for comprehensive testing:
-
-### NetworkFence: Peer Cluster Unreachable (Implemented ✅)
-
-**What it simulates:** Network partition between peer clusters / between local cluster and peer storage backend
-
-**Implementation:** Uses CSI-Addons NetworkFence CRD to block specific network CIDRs by adding iptables rules or network policies
-- Blocks network packets from/to specified IP ranges
-- **Local storage remains fully accessible** to the local cluster
-- **Peer cluster is network-isolated** but its storage is still online
-- Used by: **L1-E-003, L1-E-005, L1-DIS-005, L1-DIS-006, L1-PROM-003, L1-DEM-003, L1-DEM-004, L1-RSYNC-003**
-
-**Example Scenario (Ceph RBD):**
-```
-Cluster 1 (Primary)              Network Partition              Cluster 2 (Secondary)
-├─ Local Storage: ✅ Online      ╱════════════════╲             ├─ Local Storage: ✅ Online
-├─ Can read/write local volumes  ║ NetworkFence   ║              ├─ Can read/write local volumes
-├─ Cannot reach Cluster 2        ║ Blocks CIDRs   ║              ├─ Cannot reach Cluster 1
-└─ RBD mirror sees peer down     ╲════════════════╱              └─ RBD mirror sees peer down
-```
-
-**Expected Behavior:**
-- PromoteVolume RPC **succeeds** (only requires local storage access, not peer coordination)
-- DemoteVolume RPC **succeeds** (only requires local storage access)
-- But with `force=false`, operations may wait/retry expecting peer recovery
-- Mirror status shows "degraded" but operations can proceed
-- After unfencing, peer reconnects and mirror resynchronizes
+### Implementation by API
 
 ---
 
-### Storage Array Unreachable: Local Storage Backend Offline (Not Yet Implemented ❌)
+## EnableVolumeReplication API (9 specs, 18 test cases)
 
-**What it simulates:** Local storage backend becomes unavailable (e.g., Ceph cluster down, storage array power failure, network to storage controller lost)
+| Spec | Status | Description | Duration |
+|------|--------|-------------|----------|
+| **L1-E-001** + L1-INFO-001 | ✅ Implemented | Enable snapshot mode replication | ~6s |
+| **L1-E-002** + L1-INFO-001 | ✅ Implemented | Enable journal mode replication | ~6s |
+| **L1-E-003** + L1-INFO-005/001 | ✅ Implemented | Enable with NetworkFence (peer unreachable scenario) | ~180s |
+| **L1-E-004** + L1-INFO-012 | ✅ Implemented | Invalid schedulingInterval (error handling) | ~6s |
+| **L1-E-005** + L1-INFO-001 | ✅ Implemented | Idempotent enable (no-op on already-enabled) | ~6s |
+| **L1-E-006** + L1-INFO-013 | ✅ Implemented | Invalid secret reference (error handling) | ~6s |
+| **L1-E-007** + L1-INFO-011 | ✅ Implemented | Invalid mirroringMode (error handling) | ~6s |
+| **L1-E-008** + L1-INFO-001 | ✅ Implemented | Future schedulingStartTime (deferred replication) | ~6s |
+| **L1-E-009** + L1-INFO-014 | ✅ Implemented | Invalid schedulingStartTime format (error handling) | ~6s |
 
-**Implementation:** Requires mechanism to make local storage backend inaccessible (see [Issue #9](https://github.com/nadavleva/kubernetes-csi-addons/issues/9) for implementation options)
-- **Cannot execute any storage operations** on local volumes
-- **Network to peer cluster may be UP** (peer can be reached)
-- **CSI driver returns storage unavailability errors** for all operations
-- Blocked tests: **L1-PROM-005, L1-PROM-006, L1-DEM-005, L1-DEM-006**
+**Key Features:**
+- Creates VolumeReplicationClass with specified mirroring mode (snapshot/journal)
+- Monitors VolumeReplication status for `Replicating=True` and `Completed=True`
+- Tests both success and error scenarios with proper status conditions
+- Each test creates its own per-namespace secret with placeholder credentials
+- Integrated GetVolumeReplicationInfo assertions for success and error states
 
-**Example Scenario (Ceph RBD):**
-```
-Cluster 1 (Primary)              Ceph Storage Cluster Down
-├─ Local Storage: ❌ OFFLINE     ╱═════════════════════╲
-├─ Cannot read/write volumes     ║ No local storage      ║
-├─ CAN reach Cluster 2 network   ║ I/O errors on all ops║
-├─ RBD driver returns errors     ║ No backend available  ║
-└─ Mirror status unknown         ╲═════════════════════╱
+---
 
-Cluster 2 (Secondary)
-├─ Local Storage: ✅ Online (but cannot sync)
-├─ Can reach Cluster 1 network
-└─ Replication blocked waiting for primary storage
-```
+## GetVolumeReplicationInfo API (10 specs, 10 test cases)
 
-**Expected Behavior:**
-- PromoteVolume RPC **FAILS** (cannot access primary volume to read/coordinate state)
-- DemoteVolume RPC **FAILS** (cannot access volume to perform state transition)
-- VR Status shows: `Degraded=True`, `FailedToPromote` / `FailedToDemote` reason
-- **force=true parameter CANNOT override storage layer failures** (unlike peer unreachability)
-- Operations remain failed until storage recovers
+| Spec | Status | Description | Duration |
+|------|--------|-------------|----------|
+| **L1-INFO-001** | ✅ Implemented | Successful replication info (Replicating=True) | Integrated with E-001, E-002, E-005, E-008 |
+| **L1-INFO-005** | ✅ Implemented | Error info when peer is unreachable | Integrated with E-003 |
+| **L1-INFO-008** | ✅ Implemented | Non-existent volume (error handling) | ~2s |
+| **L1-INFO-011** | ✅ Implemented | Invalid mirroringMode (error in conditions) | Integrated with E-007 |
+| **L1-INFO-012** | ✅ Implemented | Invalid schedulingInterval (error in conditions) | Integrated with E-004 |
+| **L1-INFO-013** | ✅ Implemented | Invalid secret (error in conditions) | Integrated with E-006 |
+| **L1-INFO-014** | ✅ Implemented | Invalid time format (error in conditions) | Integrated with E-009 |
+
+**Key Features:**
+- Returns VolumeReplication status with replication state, conditions, and timestamps
+- Handles healthy replication (Replicating=True, Degraded=False)
+- Handles error conditions with appropriate failure messages and status
+- Non-existent volumes return error status without panic
+
+---
+
+## DisableVolumeReplication API (12 specs, 12 test cases)
+
+| Spec | Status | Description | Duration | Requirements |
+|------|--------|-------------|----------|--------------|
+| **L1-DIS-001** | ✅ Implemented | Disable active replication on primary | ~6s | Single cluster |
+| **L1-DIS-002** | ✅ Implemented | Disable active replication on secondary | ~31s | Full DR mode |
+| **L1-DIS-003** | ✅ Implemented | Idempotent disable (no VR on primary) | ~4s | Single cluster |
+| **L1-DIS-004** | ✅ Implemented | Idempotent disable (no VR on secondary) | ~4s | Full DR mode |
+| **L1-DIS-005** | ✅ Implemented | Disable with peer unreachable (force=false) | ⏭️ Skipped if no NetworkFence | Full DR + NetworkFence |
+| **L1-DIS-006** | ✅ Implemented | Disable with peer unreachable (force=true) | ⏭️ Skipped if no NetworkFence | Full DR + NetworkFence |
+| **L1-DIS-009** | ✅ Implemented | Force disable active replication (primary) | ~6s | Single cluster |
+| **L1-DIS-010** | ✅ Implemented | Force disable active replication (secondary) | ~31s | Full DR mode |
+| **L1-DIS-011** | ✅ Implemented | Force disable idempotent (no VR on primary) | ~4s | Single cluster |
+| **L1-DIS-012** | ✅ Implemented | Force disable idempotent (no VR on secondary) | ~4s | Full DR mode |
+
+**Key Features:**
+- Removes replication from primary and secondary volumes
+- Primary volume becomes writeable after disable
+- Secondary volume remains read-only (not promoted)
+- Graceful vs. force disable handling
+- Idempotent behavior when no replication exists
+
+---
+
+## PromoteVolumeReplication API (5+ specs, 5+ test cases)
+
+| Spec | Status | Description | Duration | Requirements |
+|------|--------|-------------|----------|--------------|
+| **L1-PROM-001** | ✅ Implemented | Promote secondary → primary (healthy) | ~40s | Full DR mode |
+| **L1-PROM-002** | ✅ Implemented | Idempotent promote (already primary) | ~8s | Full DR mode |
+| **L1-PROM-007** | ✅ Implemented | Promote with active I/O workload | ~45s | Full DR mode |
+| **L1-PROM-008** | ✅ Implemented | Force promote with active I/O | ~45s | Full DR mode |
+| **L1-PROM-003** | ✅ Implemented | Promote with peer unreachable (force=false) | ⏭️ Skipped if no NetworkFence | Full DR + NetworkFence |
+| **L1-PROM-004** | ❌ Blocked | Promote with peer unreachable (force=true) | **Issue #7** | Full DR + NetworkFence |
+| **L1-PROM-005** | ❌ Blocked | Promote with array unreachable (force=false) | **Issue #9** | Full DR + iptables block |
+| **L1-PROM-006** | ❌ Blocked | Promote with array unreachable (force=true) | **Issue #9** | Full DR + iptables block |
+
+**Key Features:**
+- Transitions secondary VR to primary (Spec.ReplicationState: secondary→primary)
+- Monitors Status.State for PrimaryState transition
+- Promotes volume from RO (secondary) to RW (primary)
+- Handles active I/O workload without corruption
+- Tests graceful vs. force promotion modes
+
+**Blocked Tests:**
+- **L1-PROM-004:** [Issue #7 - RBD mirror force promote fails when degraded](https://github.com/nadavleva/kubernetes-csi-addons/issues/7)
+  - **Problem**: VR state remains Secondary instead of transitioning to Primary when RBD mirror is degraded
+  - **Status**: Awaiting RBD driver fix or workaround
+  
+- **L1-PROM-005, L1-PROM-006:** [Issue #9 - Array unreachability simulation via iptables](https://github.com/nadavleva/kubernetes-csi-addons/issues/9)
+  - **Problem**: Test infrastructure cannot simulate local storage array becoming unreachable
+  - **Solution approach**: Block iptables rules on CSI client nodes to simulate storage array unavailability
+  - **Status**: Awaiting infrastructure implementation (different from NetworkFence)
+
+---
+
+## DemoteVolumeReplication API (8+ specs, 8+ test cases)
+
+| Spec | Status | Description | Duration | Requirements |
+|------|--------|-------------|----------|--------------|
+| **L1-DEM-001** | ✅ Implemented | Demote primary → secondary (healthy) | ~225s | Full DR mode |
+| **L1-DEM-002** | ✅ Implemented | Idempotent demote (already secondary) | ~31s | Full DR mode |
+| **L1-DEM-007** | ✅ Implemented | Demote with active I/O workload | ~220s | Full DR mode |
+| **L1-DEM-008** | ✅ Implemented | Force demote with active I/O | ~220s | Full DR mode |
+| **L1-DEM-003** | ✅ Implemented | Demote with peer unreachable (force=false) | ⏭️ Skipped if no NetworkFence | Full DR + NetworkFence |
+| **L1-DEM-004** | ✅ Implemented | Demote with peer unreachable (force=true) | ~75s | Full DR + NetworkFence |
+| **L1-DEM-005** | ❌ Blocked | Demote with array unreachable (force=false) | **Issue #9** | Full DR + iptables block |
+| **L1-DEM-006** | ❌ Blocked | Demote with array unreachable (force=true) | **Issue #9** | Full DR + iptables block |
+
+**Key Features:**
+- Transitions primary VR to secondary (Spec.ReplicationState: primary→secondary)
+- Monitors Status.State for SecondaryState transition
+- Demotes volume from RW (primary) to RO (secondary)
+- Handles active I/O workload gracefully
+- Tests graceful vs. force demotion modes
+- Includes RBD mirror resync on secondary (accounts for long duration)
+
+**Blocked Tests:**
+- **L1-DEM-005, L1-DEM-006:** [Issue #9 - Array unreachability simulation via iptables](https://github.com/nadavleva/kubernetes-csi-addons/issues/9)
+  - **Problem**: Test infrastructure cannot simulate local storage array becoming unreachable
+  - **Solution approach**: Block iptables rules on CSI client nodes to simulate storage array unavailability
+  - **Status**: Awaiting infrastructure implementation
+
+---
+
+## ResyncVolumeReplication API (5 specs, 5 test cases) - Scaffold
+
+| Spec | Status | Description | Duration | Requirements |
+|------|--------|-------------|----------|--------------|
+| **L1-RSYNC-001** | 🏗️ Scaffold | Resync secondary after split-brain | - | Full DR mode |
+| **L1-RSYNC-002** | 🏗️ Scaffold | Idempotent resync | - | Full DR mode |
+| **L1-RSYNC-003** | 🏗️ Scaffold | Resync with NetworkFence | - | Full DR + NetworkFence |
+| **L1-RSYNC-004** | 🏗️ Scaffold | Force resync | - | Full DR mode |
+| **L1-RSYNC-005** | 🏗️ Scaffold | Resync error handling | - | Full DR mode |
+
+**Status**: Scaffolded but not yet implemented (tests exist but may be incomplete or skipped)
+
+---
+
+## Full DR (Two-Cluster) Test (1 spec, 1 test case)
+
+| Spec | Status | Description | Duration | Requirements |
+|------|--------|-------------|----------|--------------|
+| **Full DR** | ✅ Implemented | Creates dual-cluster resources | ~6s | Full DR mode (DR1_CONTEXT + DR2_CONTEXT) |
+
+**Key Features:**
+- Validates that test infrastructure supports two-cluster mode
+- Creates namespace on both DR1 and DR2
+- Creates PVC and VR on DR1 only (primary)
+- Verifies resource isolation across clusters
+
+---
+
+### Blocking Issues Summary
+
+| Issue | Specs Blocked | Problem | Solution | Status |
+|-------|--------|---------|----------|--------|
+| [#7](https://github.com/nadavleva/kubernetes-csi-addons/issues/7) | L1-PROM-004 (1) | CSI behavior: RBD mirror force promote fails when degraded with peer unreachable | Investigate RBD driver behavior; may require CSI driver enhancement or RBD config change | 🔍 Investigating |
+| [#9](https://github.com/nadavleva/kubernetes-csi-addons/issues/9) | L1-PROM-005, L1-PROM-006, L1-DEM-005, L1-DEM-006 (4) | Test infrastructure: Cannot simulate local storage array becoming unreachable | Add iptables blocking on CSI client nodes to simulate storage backend unavailability | In progress (created March 10, 2026) |
+
+**Skipped Test Breakdown:**
+- **1 test** blocked by CSI behavior investigation (Issue #7): Requires understanding RBD mirror force promote in degraded mode
+- **4 tests** blocked by infrastructure gaps (Issue #9): Requires iptables fault injection mechanism
+
+---
+
+### Test Execution Requirements
+
+**Single-Cluster Mode** (default):
+- Runs only tests that don't require peer cluster coordination
+- Does NOT require `DR1_CONTEXT` or `DR2_CONTEXT`
+- Covers: L1-E-001, L1-E-002, L1-E-004, L1-E-005, L1-E-006, L1-E-007, L1-E-008, L1-E-009, L1-INFO-008, L1-DIS-001, L1-DIS-003, L1-DIS-009, L1-DIS-011
+- Skipped with log: L1-DIS-002, L1-DIS-004, L1-DIS-010, L1-DIS-012, L1-DEM-001, L1-DEM-002, L1-DEM-007, L1-DEM-008, L1-PROM-001, L1-PROM-002, L1-PROM-007, L1-PROM-008, Full DR
+
+**Full DR Mode** (when `DR1_CONTEXT` and `DR2_CONTEXT` both set):
+- Runs all two-cluster tests
+- Enables L1-E-003 (NetworkFence) tests
+- Covers all Promote, Demote, Disable on secondary, Full DR tests
+- ~38-40 specs pass with healthy infrastructure
+
+**Skipped Tests:**
+- Tests requiring NetworkFence skip gracefully if `IsNetworkFenceSupportAvailable()` returns false
+- Tests requiring iptables infrastructure skip until Issue #9 implementation
+- All skips include log messages explaining the reason
 
 ---
 

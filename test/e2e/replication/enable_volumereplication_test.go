@@ -144,6 +144,7 @@ var _ = Describe("EnableVolumeReplication", func() {
 			nsName := UniqueNamespace()
 			By("Creating namespace " + nsName)
 			ns := CreateNamespace(ctx, c, nsName)
+			RegisterTestNamespace(ns.Name)
 
 			secretName, secretNs := ReplicationSecretRef(ctx, c, env, nsName)
 			By("Creating PVC and waiting for Bound")

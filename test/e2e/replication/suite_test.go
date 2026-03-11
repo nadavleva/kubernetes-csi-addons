@@ -14,19 +14,24 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+// See docs/testing/ginkgo-flow-guide.md for detailed Ginkgo v2 flow diagrams and documentation.
+
 package replication
 
 import (
 	"context"
 	"fmt"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	"github.com/onsi/ginkgo/v2/types"
 	. "github.com/onsi/gomega"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -54,7 +59,23 @@ var (
 	dr2Context                     string
 	networkFenceSupportCached      *bool  // cached result of NetworkFence capability detection (nil = not yet checked)
 	networkFenceSupportProvisioner string // provisioner used for cached check
+	sigChan                        chan os.Signal
+	cleanupNamespaces              []string // track test namespaces for forced-termination cleanup
 )
+
+func init() {
+	// Setup signal handler for graceful cleanup on forced termination (SIGTERM, SIGINT)
+	// This catches termination signals before process is killed
+	sigChan = make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGTERM, syscall.SIGINT)
+
+	go func() {
+		sig := <-sigChan
+		Logf("[SIGNAL]", "received %s - initiating cleanup of %d namespaces", sig, len(cleanupNamespaces))
+		performEmergencyCleanup()
+		os.Exit(130) // Standard exit code for SIGINT
+	}()
+}
 
 func TestReplicationE2E(t *testing.T) {
 	RegisterFailHandler(Fail)
@@ -64,14 +85,14 @@ func TestReplicationE2E(t *testing.T) {
 var _ = BeforeSuite(func() {
 	logf.SetLogger(zap.New(zap.WriteTo(GinkgoWriter), zap.UseDevMode(true)))
 
-	_, _ = fmt.Fprintf(GinkgoWriter, "[Replication E2E] BeforeSuite: checking USE_EXISTING_CLUSTER\n")
+	Logf("[SETUP]", "checking USE_EXISTING_CLUSTER")
 	useExistingCluster = os.Getenv("USE_EXISTING_CLUSTER") == "true"
 	if !useExistingCluster {
 		Skip("Replication E2E suite requires USE_EXISTING_CLUSTER=true. Use make test-replication-e2e or hack/run-replication-e2e.sh")
 	}
 
-	_, _ = fmt.Fprintf(GinkgoWriter, "[Replication E2E] BeforeSuite: loading kubeconfig (KUBECONFIG=%s)\n", os.Getenv("KUBECONFIG"))
-	_, _ = fmt.Fprintf(GinkgoWriter, "[Replication E2E] BeforeSuite: registering replication and csiaddons APIs in scheme\n")
+	Logf("[SETUP]", "loading kubeconfig (KUBECONFIG=%s)", os.Getenv("KUBECONFIG"))
+	Logf("[SETUP]", "registering replication and csiaddons APIs in scheme")
 	err := replicationv1alpha1.AddToScheme(scheme.Scheme)
 	Expect(err).NotTo(HaveOccurred())
 	err = csiaddonsv1alpha1.AddToScheme(scheme.Scheme)
@@ -82,17 +103,17 @@ var _ = BeforeSuite(func() {
 	fullDR := dr1Context != "" && dr2Context != ""
 
 	if fullDR {
-		_, _ = fmt.Fprintf(GinkgoWriter, "[Replication E2E] BeforeSuite: full-DR mode DR1_CONTEXT=%q DR2_CONTEXT=%q\n", dr1Context, dr2Context)
+		Logf("[SETUP]", "full-DR mode DR1_CONTEXT=%q DR2_CONTEXT=%q", dr1Context, dr2Context)
 		cfg, err = restConfigForContext(dr1Context)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(cfg).NotTo(BeNil())
 		cfgDR2, err := restConfigForContext(dr2Context)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(cfgDR2).NotTo(BeNil())
-		_, _ = fmt.Fprintf(GinkgoWriter, "[Replication E2E] BeforeSuite: creating Kubernetes client for DR1\n")
+		Logf("[SETUP]", "creating Kubernetes client for DR1")
 		k8sClientDR1, err = client.New(cfg, client.Options{Scheme: scheme.Scheme})
 		Expect(err).NotTo(HaveOccurred())
-		_, _ = fmt.Fprintf(GinkgoWriter, "[Replication E2E] BeforeSuite: creating Kubernetes client for DR2\n")
+		Logf("[SETUP]", "creating Kubernetes client for DR2")
 		k8sClientDR2, err = client.New(cfgDR2, client.Options{Scheme: scheme.Scheme})
 		Expect(err).NotTo(HaveOccurred())
 		k8sClient = k8sClientDR1
@@ -100,29 +121,29 @@ var _ = BeforeSuite(func() {
 		cfg, err = restConfig()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(cfg).NotTo(BeNil())
-		_, _ = fmt.Fprintf(GinkgoWriter, "[Replication E2E] BeforeSuite: creating Kubernetes client (single cluster)\n")
+		Logf("[SETUP]", "creating Kubernetes client (single cluster)")
 		k8sClient, err = client.New(cfg, client.Options{Scheme: scheme.Scheme})
 		Expect(err).NotTo(HaveOccurred())
 		Expect(k8sClient).NotTo(BeNil())
 	}
 
-	_, _ = fmt.Fprintf(GinkgoWriter, "[Replication E2E] BeforeSuite: ready\n")
+	Logf("[SETUP]", "ready")
 
 	// Detect NetworkFence support once at suite level for efficiency
 	// This is done after client creation so we can query the cluster
-	_, _ = fmt.Fprintf(GinkgoWriter, "[Replication E2E] BeforeSuite: detecting NetworkFence support\n")
+	Logf("[SETUP]", "detecting NetworkFence support")
 	testEnv := GetTestEnv()
 	isSupported := HasNetworkFenceSupport(context.Background(), k8sClient, testEnv.Provisioner)
 	networkFenceSupportCached = &isSupported
 	networkFenceSupportProvisioner = testEnv.Provisioner
-	_, _ = fmt.Fprintf(GinkgoWriter, "[Replication E2E] BeforeSuite: NetworkFence support = %v (provisioner=%q)\n", isSupported, testEnv.Provisioner)
+	Logf("[SETUP]", "NetworkFence support = %v (provisioner=%q)", isSupported, testEnv.Provisioner)
 })
 
 // ReportAfterEach logs each spec's completion for progress visibility in logs.
 var _ = ReportAfterEach(func(report types.SpecReport) {
 	stateStr := report.State.String()
 	dur := report.RunTime.Round(time.Millisecond)
-	_, _ = fmt.Fprintf(GinkgoWriter, "[Spec] %s -> %s (%s)\n", report.FullText(), stateStr, dur)
+	Logf("[SPEC]", "%s -> %s (%s)", report.FullText(), stateStr, dur)
 })
 
 // ReportAfterSuite writes a detailed summary of the run to GinkgoWriter (and thus to the log file).
@@ -274,6 +295,63 @@ func IsFullDRMode() bool {
 
 // DR1Context returns the DR1 context name (empty if not set).
 func DR1Context() string { return dr1Context }
+
+// performEmergencyCleanup attempts to clean up test namespaces when test execution is forcefully terminated.
+// Called on SIGTERM/SIGINT signals. Note: this runs in a goroutine and may not complete if process is killed.
+func performEmergencyCleanup() {
+	if k8sClient == nil {
+		Logf("[CLEANUP]", "k8s client not initialized, skipping emergency cleanup")
+		return
+	}
+
+	if len(cleanupNamespaces) == 0 {
+		Logf("[CLEANUP]", "no test namespaces to cleanup")
+		return
+	}
+
+	// Use timeout context for cleanup (10 seconds per namespace)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(len(cleanupNamespaces)*10)*time.Second)
+	defer cancel()
+
+	Logf("[CLEANUP]", "emergency cleanup started for %d namespaces", len(cleanupNamespaces))
+	for _, ns := range cleanupNamespaces {
+		nsObj := &corev1.Namespace{}
+		nsKey := client.ObjectKey{Name: ns}
+
+		// Check if namespace exists
+		if err := k8sClient.Get(ctx, nsKey, nsObj); err != nil {
+			Logf("[CLEANUP]", "namespace %q not found or error: %v", ns, err)
+			continue
+		}
+
+		// Delete namespace (cascading delete removes all resources)
+		Logf("[CLEANUP]", "deleting test namespace %q (cascade)", ns)
+		if err := k8sClient.Delete(ctx, nsObj); err != nil {
+			Logf("[CLEANUP]", "error deleting namespace %q: %v (continuing)", ns, err)
+			continue
+		}
+
+		// Don't wait for deletion - just trigger it
+		Logf("[CLEANUP]", "namespace %q deletion triggered", ns)
+	}
+
+	Logf("[CLEANUP]", "emergency cleanup triggered, exiting")
+}
+
+// RegisterTestNamespace tracks a namespace for emergency cleanup on forced termination.
+// Called automatically by CreateNamespaceWithCleanup() wrapper.
+func RegisterTestNamespace(namespace string) {
+	cleanupNamespaces = append(cleanupNamespaces, namespace)
+	Logf("[CLEANUP]", "registered namespace %q for emergency cleanup (total: %d)", namespace, len(cleanupNamespaces))
+}
+
+// CreateNamespaceWithCleanup creates a namespace using the helper and automatically registers it for emergency cleanup.
+// This wrapper ensures all test namespaces are tracked for forced-termination cleanup.
+func CreateNamespaceWithCleanup(ctx context.Context, c client.Client, name string) *corev1.Namespace {
+	ns := CreateNamespace(ctx, c, name)
+	RegisterTestNamespace(ns.Name)
+	return ns
+}
 
 // DR2Context returns the DR2 context name (empty if not set).
 func DR2Context() string { return dr2Context }
