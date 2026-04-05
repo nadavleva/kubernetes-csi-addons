@@ -879,39 +879,50 @@ func GetFenceCIDRs(ctx context.Context, c client.Client, provisioner, networkFen
 			}
 		}
 		if len(cidrs) > 0 {
+			Logf("[DEBUG]", "GetFenceCIDRs: Using FENCE_CIDRS env var: %v", cidrs)
 			return cidrs
 		}
 	}
+	Logf("[DEBUG]", "GetFenceCIDRs: FENCE_CIDRS not set, checking CSIAddonsNode for networkFenceClientStatus (provisioner=%s, class=%s)", provisioner, networkFenceClassName)
 	deadline := time.Now().Add(fenceCIDRProbeTimeout)
 	var cidrs []string
 	for time.Now().Before(deadline) {
 		list := &csiaddonsv1alpha1.CSIAddonsNodeList{}
 		err := c.List(ctx, list)
 		if err != nil {
+			Logf("[DEBUG]", "GetFenceCIDRs: Failed to list CSIAddonsNodes: %v", err)
 			time.Sleep(pollInterval)
 			continue
 		}
+		Logf("[DEBUG]", "GetFenceCIDRs: Found %d CSIAddonsNodes", len(list.Items))
 		cidrs = nil
 		for i := range list.Items {
 			node := &list.Items[i]
+			Logf("[DEBUG]", "GetFenceCIDRs: Checking CSIAddonsNode %s (driver=%s)", node.Name, node.Spec.Driver.Name)
 			if node.Spec.Driver.Name != provisioner {
 				continue
 			}
+			Logf("[DEBUG]", "GetFenceCIDRs: Driver matches, checking networkFenceClientStatus (%d statuses)", len(node.Status.NetworkFenceClientStatus))
 			for _, nfcs := range node.Status.NetworkFenceClientStatus {
+				Logf("[DEBUG]", "GetFenceCIDRs:   NetworkFenceClass: %s (looking for %s)", nfcs.NetworkFenceClassName, networkFenceClassName)
 				if nfcs.NetworkFenceClassName != networkFenceClassName {
 					continue
 				}
+				Logf("[DEBUG]", "GetFenceCIDRs:   Class matches, found %d client details", len(nfcs.ClientDetails))
 				for _, detail := range nfcs.ClientDetails {
 					cidrs = append(cidrs, detail.Cidrs...)
 				}
 			}
 		}
 		if len(cidrs) > 0 {
+			Logf("[INFO]", "GetFenceCIDRs: Found CIDRs from CSIAddonsNode: %v", cidrs)
 			return cidrs
 		}
+		Logf("[DEBUG]", "GetFenceCIDRs: No CIDRs found yet, retrying in %v...", pollInterval)
 		time.Sleep(pollInterval)
 	}
 	// Fallback: use node InternalIPs when driver does not advertise GET_CLIENTS_TO_FENCE (e.g. CephFS)
+	Logf("[WARN]", "GetFenceCIDRs: Timeout waiting for CSIAddonsNode networkFenceClientStatus, falling back to node InternalIPs")
 	return GetNodeIPsForFencing(ctx, c)
 }
 
@@ -920,16 +931,25 @@ func GetFenceCIDRs(ctx context.Context, c client.Client, provisioner, networkFen
 func GetNodeIPsForFencing(ctx context.Context, c client.Client) []string {
 	nodeList := &corev1.NodeList{}
 	if err := c.List(ctx, nodeList); err != nil {
+		Logf("[ERROR]", "GetNodeIPsForFencing: Failed to list nodes: %v", err)
 		return nil
 	}
 	var cidrs []string
+	Logf("[DEBUG]", "GetNodeIPsForFencing: Found %d nodes, extracting InternalIPs", len(nodeList.Items))
 	for _, node := range nodeList.Items {
 		for _, addr := range node.Status.Addresses {
 			if addr.Type == corev1.NodeInternalIP && addr.Address != "" {
-				cidrs = append(cidrs, addr.Address+"/32")
+				cidr := addr.Address + "/32"
+				cidrs = append(cidrs, cidr)
+				Logf("[DEBUG]", "GetNodeIPsForFencing: Added node %s IP: %s", node.Name, cidr)
 				break
 			}
 		}
+	}
+	if len(cidrs) > 0 {
+		Logf("[INFO]", "GetNodeIPsForFencing: Fallback CIDRs from node IPs: %v", cidrs)
+	} else {
+		Logf("[ERROR]", "GetNodeIPsForFencing: No node IPs found")
 	}
 	return cidrs
 }
@@ -969,20 +989,29 @@ func CreateNetworkFenceAndWait(ctx context.Context, c client.Client, namespace, 
 	nfcName := "nfc-" + UniqueNamespace()
 	nfName := "nf-" + UniqueNamespace()
 
+	Logf("[DEBUG]", "CreateNetworkFenceAndWait: Creating NetworkFenceClass: %s", nfcName)
 	// Create NetworkFenceClass
 	nfc := CreateNetworkFenceClass(ctx, c, nfcName, provisioner, secretName, secretNamespace)
+	Logf("[INFO]", "CreateNetworkFenceAndWait: NetworkFenceClass created: %s", nfcName)
 
 	// Get CIDRs to fence
+	Logf("[DEBUG]", "CreateNetworkFenceAndWait: Getting fence CIDRs for class: %s", nfcName)
 	cidrs := GetFenceCIDRs(ctx, c, provisioner, nfcName)
 	if len(cidrs) == 0 {
+		Logf("[ERROR]", "CreateNetworkFenceAndWait: No CIDRs found for fencing! Cannot proceed with NetworkFence creation")
 		Expect(cidrs).NotTo(BeEmpty(), "Failed to get CIDRs for network fencing")
 	}
+	Logf("[INFO]", "CreateNetworkFenceAndWait: Retrieved %d CIDRs for fencing: %v", len(cidrs), cidrs)
 
 	// Create NetworkFence with Fenced state
+	Logf("[DEBUG]", "CreateNetworkFenceAndWait: Creating NetworkFence: %s with CIDRs: %v", nfName, cidrs)
 	nf := CreateNetworkFence(ctx, c, nfName, nfcName, cidrs, csiaddonsv1alpha1.Fenced)
+	Logf("[INFO]", "CreateNetworkFenceAndWait: NetworkFence created: %s", nfName)
 
 	// Wait for fence to be applied
+	Logf("[DEBUG]", "CreateNetworkFenceAndWait: Waiting for NetworkFence result (timeout=2 min)...")
 	WaitForNetworkFenceResult(ctx, c, nf, csiaddonsv1alpha1.FencingOperationResultSucceeded)
+	Logf("[INFO]", "CreateNetworkFenceAndWait: NetworkFence %s result succeeded", nfName)
 
 	return nfc, nf
 }
@@ -1039,6 +1068,35 @@ func RemoveFinalizerFromNetworkFence(ctx context.Context, c client.Client, nf *c
 	Expect(c.Update(ctx, nf)).To(Succeed())
 }
 
+// logVRState logs comprehensive state information about a VolumeReplication resource in CRD format
+func logVRState(vr *replicationv1alpha1.VolumeReplication, stageName string) {
+	if vr == nil {
+		return
+	}
+
+	// Format conditions as Condition=Status pairs
+	conditionsStr := "NO CONDITIONS"
+	if len(vr.Status.Conditions) > 0 {
+		var condDetails []string
+		for _, cond := range vr.Status.Conditions {
+			condStr := fmt.Sprintf("%s=%s", cond.Type, cond.Status)
+			condDetails = append(condDetails, condStr)
+		}
+		conditionsStr = strings.Join(condDetails, " ")
+	}
+
+	// Format message
+	message := vr.Status.Message
+	if message == "" {
+		message = "-"
+	}
+
+	// Log data line in CRD table format:
+	// NAMESPACE              NAME              STATE        CONDITIONS                               MESSAGE
+	Logf("[INFO]", "%-30s %-30s %-15s %-40s %s",
+		vr.Namespace, vr.Name, vr.Status.State, conditionsStr, message)
+}
+
 // DeleteNetworkFenceWithCleanup unfences the CIDRs (sets fenceState: Unfenced), then deletes the
 // NetworkFence. Deletion no longer triggers UnfenceClusterNetwork; unfence must be explicit.
 // If vrs is provided (non-nil), waits for each VR's Degraded condition to become False before deletion.
@@ -1058,25 +1116,101 @@ func DeleteNetworkFenceWithCleanup(ctx context.Context, c client.Client, nf *csi
 		UnfenceNetworkFence(ctx, c, nf)
 		// Wait for unfence operation to complete before deletion
 		WaitForNetworkFenceResult(ctx, c, nf, csiaddonsv1alpha1.FencingOperationResultSucceeded)
+
 		// If VRs provided, wait for them to recover (Degraded=False) instead of hardcoded sleep
-		for _, vr := range vrs {
-			if vr == nil {
-				continue
-			}
-			Eventually(func() bool {
+		// After unfencing, RBD mirror needs time to detect connectivity and process state updates
+		if len(vrs) > 0 {
+			Logf("[INFO]", "NetworkFence unfenced successfully, allowing RBD mirror time to detect connectivity restoration")
+			// Give RBD mirror a moment to process the unfence and detect connectivity is restored
+			time.Sleep(3 * time.Second)
+
+			Logf("[INFO]", "")
+			Logf("[INFO]", "==== VR STATE BEFORE UNFENCING ====")
+			Logf("[INFO]", "%-30s %-30s %-15s %-40s %s", "NAMESPACE", "NAME", "STATE", "CONDITIONS", "MESSAGE")
+			for _, vr := range vrs {
+				if vr == nil {
+					continue
+				}
 				err := c.Get(ctx, client.ObjectKeyFromObject(vr), vr)
 				if err != nil {
-					return false
+					Logf("[WARNING]", "Failed to fetch VR %s/%s before unfence: %v", vr.Namespace, vr.Name, err)
+					continue
 				}
-				// Check that VR is no longer degraded (Degraded=False)
-				for _, cond := range vr.Status.Conditions {
-					if cond.Type == "Degraded" {
-						return cond.Status == metav1.ConditionFalse
+				logVRState(vr, "PRE-UNFENCE")
+			}
+
+			Logf("[INFO]", "")
+			Logf("[INFO]", "==== VR STATE IMMEDIATELY AFTER UNFENCING ====")
+			Logf("[INFO]", "%-30s %-30s %-15s %-40s %s", "NAMESPACE", "NAME", "STATE", "CONDITIONS", "MESSAGE")
+			for _, vr := range vrs {
+				if vr == nil {
+					continue
+				}
+				err := c.Get(ctx, client.ObjectKeyFromObject(vr), vr)
+				if err != nil {
+					Logf("[WARNING]", "Failed to fetch VR %s/%s immediately after unfence: %v", vr.Namespace, vr.Name, err)
+					continue
+				}
+				logVRState(vr, "POST-UNFENCE-IMMEDIATE")
+			}
+
+			Logf("[INFO]", "Starting recovery verification: waiting for VR Degraded=False")
+
+			firstPoll := true
+			for _, vr := range vrs {
+				if vr == nil {
+					continue
+				}
+				pollCount := 0
+				Eventually(func() bool {
+					pollCount++
+					err := c.Get(ctx, client.ObjectKeyFromObject(vr), vr)
+					if err != nil {
+						Logf("[DEBUG]", "[Poll %2d] Failed to fetch VR %s/%s: %v", pollCount, vr.Namespace, vr.Name, err)
+						return false
 					}
+
+					// Log header only on first poll to avoid clutter
+					if pollCount == 1 && firstPoll {
+						Logf("[INFO]", "")
+						Logf("[INFO]", "==== VR RECOVERY MONITORING (polling every 5s, timeout 300s) ====")
+						Logf("[INFO]", "%-30s %-30s %-15s %-40s %s", "NAMESPACE", "NAME", "STATE", "CONDITIONS", "MESSAGE")
+						firstPoll = false
+					}
+
+					// Log current state for debugging with all details
+					logVRState(vr, fmt.Sprintf("RECOVERY-POLL-%d", pollCount))
+
+					// VR is recovered when Degraded is False (or condition absent = true)
+					for _, cond := range vr.Status.Conditions {
+						if cond.Type == replicationv1alpha1.ConditionDegraded {
+							if cond.Status == metav1.ConditionFalse {
+								Logf("[INFO]", "✓ VR %s/%s HAS RECOVERED: Degraded=False", vr.Namespace, vr.Name)
+								return true
+							}
+							// Still degraded, continue waiting
+							return false
+						}
+					}
+					// No Degraded condition means VR is healthy/recovered
+					Logf("[INFO]", "✓ VR %s/%s HAS RECOVERED: Degraded condition absent", vr.Namespace, vr.Name)
+					return true
+				}, 300*time.Second, 5*time.Second).Should(BeTrue(),
+					"VR %s/%s health should recover (Degraded=False) after unfencing", vr.Namespace, vr.Name)
+
+				// Log final state after recovery
+				err := c.Get(ctx, client.ObjectKeyFromObject(vr), vr)
+				if err == nil {
+					if firstPoll {
+						Logf("[INFO]", "")
+						Logf("[INFO]", "==== VR FINAL STATE (RECOVERED) ====")
+						Logf("[INFO]", "%-30s %-30s %-15s %-40s %s", "NAMESPACE", "NAME", "STATE", "CONDITIONS", "MESSAGE")
+						firstPoll = false
+					}
+					logVRState(vr, "FINAL-RECOVERED")
 				}
-				return false
-			}, 200*time.Second, 10*time.Second).Should(BeTrue(),
-				"VR %s/%s health should recover (Degraded=False) after unfencing", vr.Namespace, vr.Name)
+			}
+			Logf("[INFO]", "All VRs recovered after unfencing, proceeding with deletion")
 		}
 	}
 	_ = c.Delete(ctx, nf)

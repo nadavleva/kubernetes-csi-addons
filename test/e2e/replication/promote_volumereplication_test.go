@@ -448,11 +448,12 @@ var _ = Describe("PromoteVolumeReplication", func() {
 
 			By("[DR2] Initializing fault injection provider")
 			faultProvider, err = helpers.NewFaultInjectionProvider(helpers.FaultInjectionConfig{
-				Type:      helpers.FaultInjectorIptables,
+				Type:      helpers.GetFaultInjectorTypeFromEnv(),
 				Client:    cDR2,
 				Namespace: nsName,
 				ProviderParams: map[string]string{
-					"image": helpers.DefaultIptablesImageWithRegistry,
+					"provisioner": env.Provisioner,
+					"image":       helpers.DefaultIptablesImageWithRegistry,
 				},
 			})
 			Expect(err).NotTo(HaveOccurred(), "Failed to create fault injection provider")
@@ -475,6 +476,8 @@ var _ = Describe("PromoteVolumeReplication", func() {
 			}, 2*time.Minute, 10*time.Second).Should(BeTrue(), "Network should be fenced successfully")
 
 			By("[DR2] Attempting to promote secondary to primary while peer is fenced (force=false; should fail)")
+			err = cDR2.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrDR2.Name}, vrDR2)
+			Expect(err).NotTo(HaveOccurred())
 			vrDR2.Spec.ReplicationState = replicationv1alpha1.Primary
 			err = cDR2.Update(ctx, vrDR2)
 			Expect(err).NotTo(HaveOccurred())
@@ -622,10 +625,11 @@ var _ = Describe("PromoteVolumeReplication", func() {
 
 			By("[DR2] Initializing fault injection provider")
 			faultConfig := helpers.FaultInjectionConfig{
-				Type:      helpers.FaultInjectorIptables,
+				Type:      helpers.GetFaultInjectorTypeFromEnv(),
 				Client:    cDR2,
 				Namespace: nsName,
 				ProviderParams: map[string]string{
+					"provisioner":     env.Provisioner,
 					"cluster_context": "DR2", // Help identify which cluster this is
 					"image":           helpers.DefaultIptablesImageWithRegistry,
 				},

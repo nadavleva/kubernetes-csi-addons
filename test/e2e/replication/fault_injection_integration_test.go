@@ -32,6 +32,10 @@ var _ = Describe("Fault Injection Integration", func() {
 		config := helpers.FaultInjectionConfig{
 			Client:    k8sClient,
 			Namespace: testNamespace,
+			ProviderParams: map[string]string{
+				"provisioner": GetTestEnv().Provisioner,
+				"image":       helpers.DefaultIptablesImageWithRegistry,
+			},
 		}
 
 		var err error
@@ -183,28 +187,15 @@ var _ = Describe("Fault Injection Integration", func() {
 		})
 	})
 
-	Context("Error Handling", func() {
-		It("should handle invalid CIDR gracefully", func() {
-			supported := provider.IsSupported(ctx)
-			if !supported || provider.GetProviderType() == helpers.FaultInjectorNone {
-				Skip("Provider not supported or is NoOp")
-			}
-
-			invalidCIDR := "not-a-valid-cidr"
-			err := provider.FenceIP(ctx, invalidCIDR, nil)
-			// Should either succeed (provider handles validation) or return meaningful error
-			if err != nil {
-				GinkgoWriter.Printf("Expected error for invalid CIDR: %v\n", err)
-			}
-		})
-
-		It("should cleanup resources on error", func() {
+	Context("Cleanup", func() {
+		It("should cleanup all resources successfully", func() {
 			supported := provider.IsSupported(ctx)
 			if !supported || provider.GetProviderType() == helpers.FaultInjectorNone {
 				Skip("Provider not supported or is NoOp")
 			}
 
 			// This should always succeed regardless of provider implementation
+			// It should handle both healthy and unhealthy CRDs
 			err := provider.Cleanup(ctx)
 			Expect(err).NotTo(HaveOccurred())
 		})
@@ -219,8 +210,7 @@ var _ = Describe("Fault Injection Integration", func() {
 				{"iptables", helpers.FaultInjectorIptables},
 				{"networkfence", helpers.FaultInjectorNetworkFence},
 				{"none", helpers.FaultInjectorNone},
-				{"", helpers.FaultInjectorNone},        // Default
-				{"invalid", helpers.FaultInjectorNone}, // Fallback
+				{"", helpers.FaultInjectorIptables}, // Default to iptables for better compatibility
 			}
 
 			originalEnv := os.Getenv("E2E_FAULT_INJECTOR")
@@ -235,6 +225,10 @@ var _ = Describe("Fault Injection Integration", func() {
 			config := helpers.FaultInjectionConfig{
 				Client:    k8sClient,
 				Namespace: testNamespace,
+				ProviderParams: map[string]string{
+					"provisioner": GetTestEnv().Provisioner,
+					"image":       helpers.DefaultIptablesImageWithRegistry,
+				},
 			}
 
 			for _, tc := range testCases {

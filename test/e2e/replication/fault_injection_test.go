@@ -77,6 +77,10 @@ var _ = Describe("Fault Injection Framework", func() {
 					Type:      tc.providerType,
 					Client:    GetK8sClient(),
 					Namespace: "kube-system", // Use existing namespace for testing
+					ProviderParams: map[string]string{
+						"provisioner": GetTestEnv().Provisioner,
+						"image":       helpers.DefaultIptablesImageWithRegistry,
+					},
 				}
 
 				provider, err := helpers.NewFaultInjectionProvider(config)
@@ -102,6 +106,10 @@ var _ = Describe("Fault Injection Framework", func() {
 				Type:      helpers.FaultInjectorNone,
 				Client:    GetK8sClient(),
 				Namespace: "kube-system",
+				ProviderParams: map[string]string{
+					"provisioner": GetTestEnv().Provisioner,
+					"image":       helpers.DefaultIptablesImageWithRegistry,
+				},
 			}
 
 			provider, err := helpers.NewFaultInjectionProvider(config)
@@ -140,9 +148,12 @@ var _ = Describe("Fault Injection Framework", func() {
 			}
 
 			config = helpers.FaultInjectionConfig{
-				Type:      helpers.FaultInjectorIptables,
+				Type:      helpers.FaultInjectorIptables, // Force iptables for this specific test
 				Client:    GetK8sClient(),
 				Namespace: "kube-system",
+				ProviderParams: map[string]string{
+					"image": helpers.DefaultIptablesImageWithRegistry,
+				},
 			}
 
 			var err error
