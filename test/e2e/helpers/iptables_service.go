@@ -17,19 +17,24 @@ limitations under the License.
 package helpers
 
 import (
+	"bytes"
 	"context"
+	"embed"
 	"fmt"
 	"os"
 	"os/exec"
 	"strings"
+	"text/template"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/resource"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/yaml"
 )
+
+//go:embed templates/iptables-daemonset.yaml
+var daemonsetTemplateFS embed.FS
 
 // DeployIptablesService deploys the iptables manager DaemonSet to the cluster.
 // This function:
@@ -58,93 +63,14 @@ func DeployIptablesService(ctx context.Context, c client.Client) error {
 	}
 	Logf("[IPTABLES-SERVICE]", "using namespace: %s", daemonsetNs.Name)
 
-	// Deploy the DaemonSet
-	daemonsetName := "csi-addons-iptables-manager"
-	daemonset := &appsv1.DaemonSet{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      daemonsetName,
-			Namespace: daemonsetNamespace,
-		},
-		Spec: appsv1.DaemonSetSpec{
-			Selector: &metav1.LabelSelector{
-				MatchLabels: map[string]string{
-					"app": "csi-addons-iptables-manager",
-				},
-			},
-			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{
-					Labels: map[string]string{
-						"app": "csi-addons-iptables-manager",
-					},
-				},
-				Spec: corev1.PodSpec{
-					HostNetwork: true,
-					SecurityContext: &corev1.PodSecurityContext{
-						RunAsUser: func() *int64 { i := int64(0); return &i }(),
-					},
-					Containers: []corev1.Container{
-						{
-							Name:            "iptables-manager",
-							Image:           iptablesImage,
-							ImagePullPolicy: corev1.PullNever,
-							Command: []string{"sh", "-c", `
-echo 'CSI-Addons Iptables Manager starting...';
-echo 'Iptables version:'; iptables --version &&
-echo 'Available tools:'; which iptables ping nc nslookup &&
-echo 'Creating readiness marker...';
-touch /tmp/iptables-ready &&
-echo 'Starting iptables rules monitoring loop...';
-while true; do
-  if [ -f /rules/apply.sh ]; then
-    echo '[$(date)] Executing /rules/apply.sh';
-    chmod +x /rules/apply.sh && /rules/apply.sh 2>&1 | tee -a /var/log/iptables.log;
-  else
-    echo '[$(date)] No rules file found, waiting...';
-  fi;
-  sleep 10;
-done
-`},
-							SecurityContext: &corev1.SecurityContext{
-								Privileged: func() *bool { b := true; return &b }(),
-								Capabilities: &corev1.Capabilities{
-									Add: []corev1.Capability{"NET_ADMIN", "NET_RAW"},
-								},
-							},
-							Resources: corev1.ResourceRequirements{
-								Requests: corev1.ResourceList{
-									corev1.ResourceCPU:    resource.MustParse("50m"),
-									corev1.ResourceMemory: resource.MustParse("64Mi"),
-								},
-								Limits: corev1.ResourceList{
-									corev1.ResourceCPU:    resource.MustParse("200m"),
-									corev1.ResourceMemory: resource.MustParse("128Mi"),
-								},
-							},
-							ReadinessProbe: &corev1.Probe{
-								ProbeHandler: corev1.ProbeHandler{
-									Exec: &corev1.ExecAction{
-										Command: []string{"sh", "-c", "test -f /tmp/iptables-ready && iptables --version"},
-									},
-								},
-								InitialDelaySeconds: 2,
-								PeriodSeconds:       5,
-								TimeoutSeconds:      3,
-								SuccessThreshold:    1,
-								FailureThreshold:    3,
-							},
-						},
-					},
-					Tolerations: []corev1.Toleration{
-						{
-							Operator: corev1.TolerationOpExists,
-						},
-					},
-					TerminationGracePeriodSeconds: func() *int64 { i := int64(10); return &i }(),
-				},
-			},
-		},
+	// Deploy the DaemonSet using template
+	daemonset, err := createIptablesDaemonSetFromTemplate(daemonsetNamespace, iptablesImage)
+	if err != nil {
+		Logf("[IPTABLES-SERVICE]", "ERROR: failed to create DaemonSet from template: %v", err)
+		return fmt.Errorf("failed to create DaemonSet from template: %w", err)
 	}
 
+	daemonsetName := "csi-addons-iptables-manager"
 	Logf("[IPTABLES-SERVICE]", "deploying iptables-manager DaemonSet to namespace: %s", daemonsetNamespace)
 	if err := c.Create(deployCtx, daemonset); err != nil {
 		// Check if already exists and update if needed
@@ -191,6 +117,39 @@ done
 	}
 
 	return fmt.Errorf("iptables DaemonSet failed to reach ready state within timeout")
+}
+
+// createIptablesDaemonSetFromTemplate creates a DaemonSet from the embedded template.
+func createIptablesDaemonSetFromTemplate(namespace, image string) (*appsv1.DaemonSet, error) {
+	// Read the template
+	templateBytes, err := daemonsetTemplateFS.ReadFile("templates/iptables-daemonset.yaml")
+	if err != nil {
+		return nil, fmt.Errorf("failed to read template: %w", err)
+	}
+
+	// Parse and execute template
+	tmpl, err := template.New("iptables-daemonset").Parse(string(templateBytes))
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse template: %w", err)
+	}
+
+	var renderedYAML bytes.Buffer
+	templateValues := map[string]interface{}{
+		"Namespace": namespace,
+		"Image":     image,
+	}
+
+	if err := tmpl.Execute(&renderedYAML, templateValues); err != nil {
+		return nil, fmt.Errorf("failed to execute template: %w", err)
+	}
+
+	// Decode YAML into DaemonSet
+	daemonset := &appsv1.DaemonSet{}
+	if err := yaml.Unmarshal(renderedYAML.Bytes(), daemonset); err != nil {
+		return nil, fmt.Errorf("failed to decode DaemonSet YAML: %w", err)
+	}
+
+	return daemonset, nil
 }
 
 // loadImageToCluster attempts to load the iptables image to the cluster using minikube, kind, or k3d.
@@ -357,21 +316,7 @@ func DeployIptablesServiceWithConfigMap(ctx context.Context, c client.Client, na
 	}
 	tempProvider := &IptablesFaultProvider{config: tempConfig}
 
-	// Create the initial ConfigMap using template
-	configMap := tempProvider.createIptablesConfigMap()
-	Logf("[IPTABLES-SERVICE]", "creating initial ConfigMap: %s", configMap.Name)
-	if err := c.Create(deployCtx, configMap); err != nil {
-		if client.IgnoreAlreadyExists(err) != nil {
-			Logf("[IPTABLES-SERVICE]", "WARNING: failed to create ConfigMap: %v", err)
-			return fmt.Errorf("failed to create ConfigMap: %w", err)
-		} else {
-			Logf("[IPTABLES-SERVICE]", "ConfigMap %s already exists", configMap.Name)
-		}
-	} else {
-		Logf("[IPTABLES-SERVICE]", "✓ ConfigMap %s created", configMap.Name)
-	}
-
-	// Create the DaemonSet using template
+	// Create the DaemonSet using template (no ConfigMap needed)
 	templateData := TemplateData{
 		Namespace: namespace,
 		Image:     iptablesImage,

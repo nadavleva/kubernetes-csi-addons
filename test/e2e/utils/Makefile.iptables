@@ -134,6 +134,25 @@ verify-images-in-clusters: ## Verify iptables images are accessible in both DR c
 	kubectl --context=$(DR2_CONTEXT) delete pod $$TEST_POD_DR2 || echo "DR2 test failed"
 	@echo "✓ Image verification completed"
 
+.PHONY: validate-network-fence
+validate-network-fence: ## Validate DaemonSet deployment and network fence functionality
+	@echo "Running comprehensive iptables network fence validation..."
+	@echo "This will test DaemonSet deployment, fence/unfence operations, and connectivity verification"
+	@$(BUILD_CONTEXT)/validate-iptables-fence.sh
+
+.PHONY: test-e2e-flow  
+test-e2e-flow: build-iptables-image load-images-to-clusters validate-network-fence ## Complete E2E test preparation and validation
+	@echo "✓ Complete E2E test flow completed successfully!"
+	@echo "Your environment is now ready for E2E testing with iptables-based network fencing."
+
+.PHONY: emergency-cleanup
+emergency-cleanup: ## Emergency cleanup of leftover iptables fence rules (use CONTEXT=<ctx> to specify context)
+	@echo "Performing emergency cleanup of iptables fence rules..."
+	@$(BUILD_CONTEXT)/emergency-cleanup-iptables.sh $(CONTEXT) "e2e-*"
+	@echo "If you need to clean up a specific namespace or different context:"
+	@echo "  make emergency-cleanup CONTEXT=dr1"
+	@echo "  $(BUILD_CONTEXT)/emergency-cleanup-iptables.sh dr2 my-specific-namespace"
+
 # Compatibility targets for existing scripts
 .PHONY: docker-build-iptables
 docker-build-iptables: build-iptables-image ## Compatibility alias for build-iptables-image

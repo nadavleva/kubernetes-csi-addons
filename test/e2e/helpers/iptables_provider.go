@@ -78,11 +78,13 @@ const (
 type IptablesFaultProvider struct {
 	config    FaultInjectionConfig
 	daemonSet *appsv1.DaemonSet
-	configMap *corev1.ConfigMap
 	deployed  bool
 
 	// Track active fence rules for cleanup
 	activeFenceRules []string
+
+	// Persistent state for emergency cleanup
+	persistentStateConfigMap *corev1.ConfigMap
 }
 
 // NewIptablesFaultProvider creates a new iptables-based fault injection provider.
@@ -90,6 +92,14 @@ func NewIptablesFaultProvider(config FaultInjectionConfig) (PeerFenceProvider, e
 	provider := &IptablesFaultProvider{
 		config:           config,
 		activeFenceRules: make([]string, 0),
+	}
+
+	// Perform emergency cleanup of any leftover fence rules from previous runs
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := provider.emergencyCleanup(ctx); err != nil {
+		Logf("[WARNING]", "Failed to perform emergency cleanup: %v", err)
+		// Don't fail provider creation - this is just cleanup
 	}
 
 	return provider, nil
@@ -115,9 +125,9 @@ func (p *IptablesFaultProvider) FenceIP(ctx context.Context, targetCIDR string, 
 		Logf("[DEBUG]", "[%s] DaemonSet %s already deployed, adding fence rule", clusterContext, IptablesDaemonSetName)
 	}
 
-	// Add the rule to the ConfigMap
-	Logf("[DEBUG]", "[%s] Adding iptables fence rule for CIDR %s to ConfigMap", clusterContext, targetCIDR)
-	if err := p.addIptablesRule(ctx, targetCIDR, "fence"); err != nil {
+	// Add the rule to the DaemonSet pods
+	Logf("[DEBUG]", "[%s] Adding iptables fence rule for CIDR %s to DaemonSet pods", clusterContext, targetCIDR)
+	if err := p.executeIptablesCommand(ctx, targetCIDR, "fence"); err != nil {
 		Logf("[ERROR]", "[%s] Failed to add iptables fence rule for IP %s to DaemonSet %s: %v", clusterContext, targetCIDR, IptablesDaemonSetName, err)
 		return fmt.Errorf("[%s] failed to add iptables fence rule to %s: %w", clusterContext, IptablesDaemonSetName, err)
 	}
@@ -142,9 +152,9 @@ func (p *IptablesFaultProvider) UnfenceIP(ctx context.Context, targetCIDR string
 		return fmt.Errorf("[%s] iptables DaemonSet %s not deployed", clusterContext, IptablesDaemonSetName)
 	}
 
-	// Remove the rule from the ConfigMap
-	Logf("[DEBUG]", "[%s] Removing iptables fence rule for CIDR %s from ConfigMap", clusterContext, targetCIDR)
-	if err := p.addIptablesRule(ctx, targetCIDR, "unfence"); err != nil {
+	// Remove the rule from the DaemonSet pods
+	Logf("[DEBUG]", "[%s] Removing iptables fence rule for CIDR %s from DaemonSet pods", clusterContext, targetCIDR)
+	if err := p.executeIptablesCommand(ctx, targetCIDR, "unfence"); err != nil {
 		Logf("[ERROR]", "[%s] Failed to add iptables unfence rule for IP %s to DaemonSet %s: %v", clusterContext, targetCIDR, IptablesDaemonSetName, err)
 		return fmt.Errorf("[%s] failed to add iptables unfence rule to %s: %w", clusterContext, IptablesDaemonSetName, err)
 	}
@@ -266,15 +276,6 @@ func (p *IptablesFaultProvider) Cleanup(ctx context.Context) error {
 		}
 	}
 
-	// Delete the ConfigMap if created
-	if p.configMap != nil {
-		Logf("[DEBUG]", "Deleting ConfigMap %s during cleanup", p.configMap.Name)
-		if err := p.config.Client.Delete(ctx, p.configMap); err != nil {
-			Logf("[ERROR]", "Failed to delete ConfigMap %s during cleanup: %v", p.configMap.Name, err)
-			errors = append(errors, fmt.Sprintf("failed to delete ConfigMap %s: %v", p.configMap.Name, err))
-		}
-	}
-
 	// Delete the DaemonSet if deployed
 	if p.deployed && p.daemonSet != nil {
 		Logf("[DEBUG]", "Deleting DaemonSet %s during cleanup", p.daemonSet.Name)
@@ -336,16 +337,7 @@ func (p *IptablesFaultProvider) deployDaemonSet(ctx context.Context) error {
 	clusterContext := p.getClusterContext()
 	Logf("[INFO]", "[%s] Deploying iptables DaemonSet %s in namespace %s", clusterContext, IptablesDaemonSetName, p.config.Namespace)
 
-	// Create ConfigMap for iptables rules
-	p.configMap = p.createIptablesConfigMap()
-	Logf("[DEBUG]", "[%s] Creating ConfigMap %s for iptables rules", clusterContext, p.configMap.Name)
-	if err := p.config.Client.Create(ctx, p.configMap); err != nil {
-		Logf("[ERROR]", "[%s] Failed to create ConfigMap %s: %v", clusterContext, p.configMap.Name, err)
-		return fmt.Errorf("[%s] failed to create ConfigMap %s: %w", clusterContext, p.configMap.Name, err)
-	}
-	Logf("[DEBUG]", "[%s] Successfully created ConfigMap %s", clusterContext, p.configMap.Name)
-
-	// Create DaemonSet
+	// Create DaemonSet directly without ConfigMap
 	p.daemonSet = p.createIptablesDaemonSet()
 	Logf("[DEBUG]", "[%s] Creating DaemonSet %s in namespace %s", clusterContext, p.daemonSet.Name, p.daemonSet.Namespace)
 	if err := p.config.Client.Create(ctx, p.daemonSet); err != nil {
@@ -651,66 +643,94 @@ func (p *IptablesFaultProvider) removeFromActiveRules(targetCIDR string) {
 	}
 }
 
-// createIptablesConfigMap creates a ConfigMap with initial iptables rule script using templates
-func (p *IptablesFaultProvider) createIptablesConfigMap() *corev1.ConfigMap {
-	data := TemplateData{
-		Namespace: p.config.Namespace,
+// executeIptablesCommand executes iptables commands directly on DaemonSet pods via kubectl exec
+func (p *IptablesFaultProvider) executeIptablesCommand(ctx context.Context, targetCIDR, action string) error {
+	clusterContext := p.getClusterContext()
+	Logf("[DEBUG]", "[%s] Executing %s command for CIDR %s on DaemonSet pods", clusterContext, action, targetCIDR)
+
+	if p.daemonSet == nil {
+		return fmt.Errorf("DaemonSet not created")
 	}
 
-	configMap := &corev1.ConfigMap{}
-	if err := p.renderTemplate("templates/iptables-configmap.yaml", data, configMap); err != nil {
-		panic(fmt.Sprintf("Failed to render ConfigMap template: %v", err))
+	// Get all DaemonSet pods
+	podList := &corev1.PodList{}
+	labelSelector := client.MatchingLabels{"app": "csi-addons-iptables-manager"}
+	if err := p.config.Client.List(ctx, podList, client.InNamespace(p.config.Namespace), labelSelector); err != nil {
+		return fmt.Errorf("failed to list DaemonSet pods: %w", err)
 	}
 
-	return configMap
-}
-
-// addIptablesRule updates the ConfigMap with new iptables rules
-func (p *IptablesFaultProvider) addIptablesRule(ctx context.Context, targetCIDR, action string) error {
-	if p.configMap == nil {
-		return fmt.Errorf("ConfigMap not created")
+	if len(podList.Items) == 0 {
+		return fmt.Errorf("no DaemonSet pods found")
 	}
 
-	Logf("[DEBUG]", "Updating ConfigMap %s with %s action for CIDR %s", p.configMap.Name, action, targetCIDR)
-
-	// Get current ConfigMap
-	key := client.ObjectKeyFromObject(p.configMap)
-	if err := p.config.Client.Get(ctx, key, p.configMap); err != nil {
-		Logf("[ERROR]", "Failed to get ConfigMap %s: %v", p.configMap.Name, err)
-		return fmt.Errorf("failed to get ConfigMap %s: %w", p.configMap.Name, err)
-	}
-
-	// Build the script content
-	var script strings.Builder
-	script.WriteString("#!/bin/sh\n")
-	script.WriteString("# Iptables rules for network fault injection\n")
-	script.WriteString(fmt.Sprintf("# Generated for DaemonSet %s\n", IptablesDaemonSetName))
-	script.WriteString(fmt.Sprintf("echo \"[$(date)] Processing %s action for %s\"\n\n", action, targetCIDR))
+	// Build the iptables command with auto-detection for compatibility
+	var command string
+	baseCommand := `
+		echo "[$(date)] CSI-Addons iptables operation starting..."
+		# Auto-detect the correct iptables command with compatibility checking
+		IPT_CMD=""
+		for iptables_variant in iptables-legacy iptables iptables-nft; do
+			if command -v "$iptables_variant" >/dev/null 2>&1; then
+				# Test if we can actually use the command and check for compatibility issues
+				test_output=$("$iptables_variant" -L OUTPUT -n 2>&1)
+				exit_code=$?
+				
+				# Check for nf_tables compatibility issues
+				if echo "$test_output" | grep -q "Could not fetch rule set generation id"; then
+					echo "[$(date)] WARNING: $iptables_variant has nf_tables compatibility issues, trying next..."
+					continue
+				fi
+				
+				# Accept if it works or gives expected permission errors
+				if [ $exit_code -eq 0 ] || echo "$test_output" | grep -q "Permission denied\|you must be root"; then
+					IPT_CMD="$iptables_variant"
+					echo "[$(date)] Using iptables command: $IPT_CMD"
+					break
+				fi
+			fi
+		done
+		if [ -z "$IPT_CMD" ]; then
+			echo "[$(date)] ERROR: No working iptables command found"
+			exit 1
+		fi
+	`
 
 	if action == "fence" {
-		script.WriteString(fmt.Sprintf("# Block traffic to %s\n", targetCIDR))
-		script.WriteString(fmt.Sprintf("iptables -C OUTPUT -d %s -j REJECT --reject-with icmp-host-unreachable 2>/dev/null || \\\n", targetCIDR))
-		script.WriteString(fmt.Sprintf("  iptables -I OUTPUT -d %s -j REJECT --reject-with icmp-host-unreachable\n", targetCIDR))
-		script.WriteString("echo \"[$(date)] Fenced: blocked traffic to " + targetCIDR + "\"\n")
-		script.WriteString("iptables -L OUTPUT -n | grep " + strings.Split(targetCIDR, "/")[0] + " || echo \"[$(date)] No rules found for " + targetCIDR + "\"\n\n")
+		command = baseCommand + fmt.Sprintf(`
+			echo "[$(date)] Fencing %s"
+			$IPT_CMD -C OUTPUT -d %s -j REJECT --reject-with icmp-host-unreachable 2>/dev/null || \
+			$IPT_CMD -I OUTPUT -d %s -j REJECT --reject-with icmp-host-unreachable
+			echo "[$(date)] Fenced: %s"
+		`, targetCIDR, targetCIDR, targetCIDR, targetCIDR)
 	} else if action == "unfence" {
-		script.WriteString(fmt.Sprintf("# Unblock traffic to %s\n", targetCIDR))
-		script.WriteString(fmt.Sprintf("iptables -D OUTPUT -d %s -j REJECT --reject-with icmp-host-unreachable 2>/dev/null || true\n", targetCIDR))
-		script.WriteString("echo \"[$(date)] Unfenced: unblocked traffic to " + targetCIDR + "\"\n")
-		script.WriteString("iptables -L OUTPUT -n | grep " + strings.Split(targetCIDR, "/")[0] + " || echo \"[$(date)] No rules found for " + targetCIDR + " (expected after unfence)\"\n\n")
+		command = baseCommand + fmt.Sprintf(`
+			echo "[$(date)] Unfencing %s"
+			$IPT_CMD -D OUTPUT -d %s -j REJECT --reject-with icmp-host-unreachable 2>/dev/null || true
+			echo "[$(date)] Unfenced: %s"
+		`, targetCIDR, targetCIDR, targetCIDR)
+	} else {
+		return fmt.Errorf("invalid action: %s", action)
 	}
 
-	scriptContent := script.String()
-	Logf("[DEBUG]", "Generated iptables script for %s %s:\n%s", action, targetCIDR, scriptContent)
+	// Execute command on all pods
+	for _, pod := range podList.Items {
+		if pod.Status.Phase != corev1.PodRunning {
+			Logf("[WARNING]", "[%s] Skipping non-running pod %s (phase: %s)", clusterContext, pod.Name, pod.Status.Phase)
+			continue
+		}
 
-	// Update ConfigMap
-	p.configMap.Data["apply.sh"] = scriptContent
-	if err := p.config.Client.Update(ctx, p.configMap); err != nil {
-		Logf("[ERROR]", "Failed to update ConfigMap %s: %v", p.configMap.Name, err)
-		return fmt.Errorf("failed to update ConfigMap %s: %w", p.configMap.Name, err)
+		Logf("[DEBUG]", "[%s] Executing %s on pod %s: %s", clusterContext, action, pod.Name, command)
+
+		// Use kubectl exec to run the command
+		if err := p.execCommandInPod(ctx, &pod, command); err != nil {
+			Logf("[ERROR]", "[%s] Failed to execute %s command on pod %s: %v", clusterContext, action, pod.Name, err)
+			return fmt.Errorf("failed to execute %s command on pod %s: %w", action, pod.Name, err)
+		}
+
+		Logf("[DEBUG]", "[%s] Successfully executed %s command on pod %s", clusterContext, action, pod.Name)
 	}
 
-	Logf("[DEBUG]", "Successfully updated ConfigMap %s with %s action for CIDR %s", p.configMap.Name, action, targetCIDR)
+	Logf("[INFO]", "[%s] Successfully %sed IP %s using iptables", clusterContext, action, targetCIDR)
 	return nil
 }
 
@@ -823,4 +843,213 @@ func (p *IptablesFaultProvider) collectDaemonSetLogs(ctx context.Context) error 
 	}
 
 	return nil
+}
+
+// execCommandInPod executes a command in a pod using a privileged Job on the same node
+func (p *IptablesFaultProvider) execCommandInPod(ctx context.Context, pod *corev1.Pod, command string) error {
+	// Create a privileged Job on the same node to execute iptables commands
+	jobName := fmt.Sprintf("iptables-exec-%s-%d", strings.ReplaceAll(pod.Spec.NodeName, ".", "-"), time.Now().Unix())
+
+	job := &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      jobName,
+			Namespace: p.config.Namespace,
+			Labels: map[string]string{
+				"app":                          "csi-addons-iptables-exec",
+				"csi-addons.io/component":      "fault-injection",
+				"csi-addons.io/fault-injector": "iptables",
+			},
+		},
+		Spec: batchv1.JobSpec{
+			TTLSecondsAfterFinished: &[]int32{300}[0], // Clean up after 5 minutes
+			Template: corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					HostNetwork: true,
+					NodeName:    pod.Spec.NodeName, // Run on the same node
+					SecurityContext: &corev1.PodSecurityContext{
+						RunAsUser: &[]int64{0}[0],
+					},
+					Containers: []corev1.Container{{
+						Name:            "iptables-exec",
+						Image:           p.getIptablesImage(),
+						ImagePullPolicy: corev1.PullNever,
+						Command:         []string{"sh", "-c", command + " && echo 'Command completed successfully'"},
+						SecurityContext: &corev1.SecurityContext{
+							Privileged: &[]bool{true}[0],
+							Capabilities: &corev1.Capabilities{
+								Add: []corev1.Capability{"NET_ADMIN", "NET_RAW"},
+							},
+						},
+					}},
+					RestartPolicy: corev1.RestartPolicyNever,
+					Tolerations: []corev1.Toleration{{
+						Operator: corev1.TolerationOpExists,
+					}},
+				},
+			},
+		},
+	}
+
+	// Create and wait for the job
+	if err := p.config.Client.Create(ctx, job); err != nil {
+		return fmt.Errorf("failed to create exec job: %w", err)
+	}
+
+	// Wait for job completion
+	for i := 0; i < 30; i++ { // Wait up to 30 seconds
+		currentJob := &batchv1.Job{}
+		if err := p.config.Client.Get(ctx, client.ObjectKeyFromObject(job), currentJob); err != nil {
+			return fmt.Errorf("failed to get job status: %w", err)
+		}
+
+		if currentJob.Status.Succeeded > 0 {
+			Logf("[DEBUG]", "Exec job %s completed successfully", jobName)
+			return nil
+		}
+
+		if currentJob.Status.Failed > 0 {
+			return fmt.Errorf("exec job %s failed", jobName)
+		}
+
+		time.Sleep(1 * time.Second)
+	}
+
+	return fmt.Errorf("exec job %s timed out", jobName)
+}
+
+// emergencyCleanup performs cleanup of any leftover fence rules from previous test runs
+func (p *IptablesFaultProvider) emergencyCleanup(ctx context.Context) error {
+	Logf("[DEBUG]", "Performing emergency cleanup of leftover fence rules...")
+
+	// Check if there are existing DaemonSets that might have leftover rules
+	daemonSetList := &appsv1.DaemonSetList{}
+	labelSelector := client.MatchingLabels{"app": "csi-addons-iptables-manager"}
+	if err := p.config.Client.List(ctx, daemonSetList, labelSelector); err != nil {
+		Logf("[DEBUG]", "Failed to list existing DaemonSets: %v", err)
+		return nil // Not a critical error
+	}
+
+	// For each existing DaemonSet, clean up all fence rules
+	for _, ds := range daemonSetList.Items {
+		Logf("[DEBUG]", "Found existing DaemonSet %s, cleaning up fence rules", ds.Name)
+		if err := p.cleanupAllFenceRules(ctx, &ds); err != nil {
+			Logf("[WARNING]", "Failed to cleanup rules for DaemonSet %s: %v", ds.Name, err)
+		}
+	}
+
+	Logf("[DEBUG]", "Emergency cleanup completed")
+	return nil
+}
+
+// cleanupAllFenceRules removes all iptables REJECT rules from DaemonSet pods
+func (p *IptablesFaultProvider) cleanupAllFenceRules(ctx context.Context, ds *appsv1.DaemonSet) error {
+	// Get all pods for this DaemonSet
+	podList := &corev1.PodList{}
+	labelSelector := client.MatchingLabels{"app": "csi-addons-iptables-manager"}
+	if err := p.config.Client.List(ctx, podList, client.InNamespace(ds.Namespace), labelSelector); err != nil {
+		return fmt.Errorf("failed to list pods: %w", err)
+	}
+
+	for _, pod := range podList.Items {
+		if pod.Status.Phase != corev1.PodRunning {
+			continue
+		}
+
+		// Use a comprehensive cleanup command that works with both legacy and nft
+		cleanupCmd := `
+			echo "[$(date)] Emergency cleanup: Removing all CSI-Addons fence rules"
+			# Try both iptables-legacy and iptables-nft
+			for ipt_cmd in iptables-legacy iptables-nft iptables; do
+				if command -v $ipt_cmd >/dev/null 2>&1; then
+					echo "[$(date)] Using $ipt_cmd for cleanup"
+					# Remove all REJECT rules from OUTPUT chain (safer than flushing entire chain)
+					$ipt_cmd -S OUTPUT | grep "\-j REJECT" | sed 's/^-A/-D/' | while read rule; do
+						echo "[$(date)] Removing rule: $rule"
+						$ipt_cmd $rule 2>/dev/null || true
+					done
+					break
+				fi
+			done
+			echo "[$(date)] Emergency cleanup completed"
+		`
+
+		if err := p.createCleanupJob(ctx, &pod, cleanupCmd); err != nil {
+			Logf("[WARNING]", "Failed to cleanup pod %s: %v", pod.Name, err)
+		}
+	}
+
+	return nil
+}
+
+// createCleanupJob creates a job to run cleanup commands on a specific node
+func (p *IptablesFaultProvider) createCleanupJob(ctx context.Context, targetPod *corev1.Pod, command string) error {
+	jobName := fmt.Sprintf("iptables-cleanup-%s-%d", strings.ReplaceAll(targetPod.Spec.NodeName, ".", "-"), time.Now().Unix())
+
+	job := &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      jobName,
+			Namespace: p.config.Namespace,
+			Labels: map[string]string{
+				"app":                          "csi-addons-iptables-cleanup",
+				"csi-addons.io/component":      "fault-injection",
+				"csi-addons.io/fault-injector": "iptables",
+			},
+		},
+		Spec: batchv1.JobSpec{
+			TTLSecondsAfterFinished: &[]int32{60}[0], // Quick cleanup
+			Template: corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					HostNetwork: true,
+					NodeName:    targetPod.Spec.NodeName,
+					SecurityContext: &corev1.PodSecurityContext{
+						RunAsUser: &[]int64{0}[0],
+					},
+					Containers: []corev1.Container{{
+						Name:            "cleanup",
+						Image:           p.getIptablesImage(),
+						ImagePullPolicy: corev1.PullNever,
+						Command:         []string{"sh", "-c", command},
+						SecurityContext: &corev1.SecurityContext{
+							Privileged: &[]bool{true}[0],
+							Capabilities: &corev1.Capabilities{
+								Add: []corev1.Capability{"NET_ADMIN", "NET_RAW"},
+							},
+						},
+					}},
+					RestartPolicy: corev1.RestartPolicyNever,
+					Tolerations: []corev1.Toleration{{
+						Operator: corev1.TolerationOpExists,
+					}},
+				},
+			},
+		},
+	}
+
+	// Create job and don't wait (fire-and-forget cleanup)
+	if err := p.config.Client.Create(ctx, job); err != nil {
+		return fmt.Errorf("failed to create cleanup job: %w", err)
+	}
+
+	// Quick check if job succeeded (but don't block)
+	go func() {
+		time.Sleep(10 * time.Second)
+		currentJob := &batchv1.Job{}
+		if err := p.config.Client.Get(context.Background(), client.ObjectKeyFromObject(job), currentJob); err == nil {
+			if currentJob.Status.Succeeded > 0 {
+				Logf("[DEBUG]", "Cleanup job %s completed successfully", jobName)
+			} else if currentJob.Status.Failed > 0 {
+				Logf("[WARNING]", "Cleanup job %s failed", jobName)
+			}
+		}
+	}()
+
+	return nil
+}
+
+// getIptablesImage returns the iptables container image to use
+func (p *IptablesFaultProvider) getIptablesImage() string {
+	if image := p.config.ProviderParams["image"]; image != "" {
+		return image
+	}
+	return DefaultIptablesImage
 }
