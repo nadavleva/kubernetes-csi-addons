@@ -29,6 +29,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -67,9 +68,11 @@ const (
 
 // Environment variable names for iptables configuration
 const (
-	EnvIptablesTargetNodes    = "E2E_IPTABLES_TARGET_NODES"
-	EnvIptablesImage          = "E2E_IPTABLES_IMAGE"
-	EnvIptablesCleanupTimeout = "E2E_IPTABLES_CLEANUP_TIMEOUT"
+	EnvIptablesTargetNodes          = "E2E_IPTABLES_TARGET_NODES"
+	EnvIptablesImage                = "E2E_IPTABLES_IMAGE"
+	EnvIptablesCleanupTimeout       = "E2E_IPTABLES_CLEANUP_TIMEOUT"
+	EnvIptablesDaemonSetNamespace   = "E2E_IPTABLES_DAEMONSET_NAMESPACE"
+	defaultIptablesSuiteDSNamespace = "csi-addons-system"
 )
 
 // IptablesFaultProvider implements PeerFenceProvider using iptables rules via privileged DaemonSets.
@@ -79,6 +82,11 @@ type IptablesFaultProvider struct {
 	config    FaultInjectionConfig
 	daemonSet *appsv1.DaemonSet
 	deployed  bool
+
+	// dsNamespace is the namespace where csi-addons-iptables-manager lives (may differ from config.Namespace).
+	dsNamespace string
+	// ownsDaemonSet is true when this provider created the DaemonSet (suite-level DS is adopted, not owned).
+	ownsDaemonSet bool
 
 	// Track active fence rules for cleanup
 	activeFenceRules []string
@@ -112,17 +120,17 @@ func (p *IptablesFaultProvider) IsSupported(ctx context.Context) bool {
 
 func (p *IptablesFaultProvider) FenceIP(ctx context.Context, targetCIDR string, params map[string]string) error {
 	clusterContext := p.getClusterContext()
+	Logf("[INFO]", "[%s] FenceIP: applying iptables block for CIDR %s (DaemonSet %s)", clusterContext, targetCIDR, IptablesDaemonSetName)
 	Logf("[DEBUG]", "[%s] Starting FenceIP operation for CIDR %s using DaemonSet %s", clusterContext, targetCIDR, IptablesDaemonSetName)
 
-	if !p.deployed {
-		Logf("[DEBUG]", "[%s] DaemonSet %s not deployed yet, deploying now", clusterContext, IptablesDaemonSetName)
-		if err := p.deployDaemonSet(ctx); err != nil {
-			Logf("[ERROR]", "[%s] Failed to deploy iptables DaemonSet %s for fencing IP %s: %v", clusterContext, IptablesDaemonSetName, targetCIDR, err)
-			return fmt.Errorf("[%s] failed to deploy iptables DaemonSet %s: %w", clusterContext, IptablesDaemonSetName, err)
-		}
-		Logf("[INFO]", "[%s] Successfully deployed DaemonSet %s for iptables operations", clusterContext, IptablesDaemonSetName)
+	if err := p.ensureDaemonSet(ctx); err != nil {
+		Logf("[ERROR]", "[%s] Failed to deploy iptables DaemonSet %s for fencing IP %s: %v", clusterContext, IptablesDaemonSetName, targetCIDR, err)
+		return fmt.Errorf("[%s] failed to deploy iptables DaemonSet %s: %w", clusterContext, IptablesDaemonSetName, err)
+	}
+	if p.ownsDaemonSet {
+		Logf("[DEBUG]", "[%s] Using provider-owned DaemonSet %s in namespace %s", clusterContext, IptablesDaemonSetName, p.dsNamespace)
 	} else {
-		Logf("[DEBUG]", "[%s] DaemonSet %s already deployed, adding fence rule", clusterContext, IptablesDaemonSetName)
+		Logf("[DEBUG]", "[%s] Using existing DaemonSet %s in namespace %s", clusterContext, IptablesDaemonSetName, p.dsNamespace)
 	}
 
 	// Add the rule to the DaemonSet pods
@@ -145,6 +153,7 @@ func (p *IptablesFaultProvider) FenceIP(ctx context.Context, targetCIDR string, 
 
 func (p *IptablesFaultProvider) UnfenceIP(ctx context.Context, targetCIDR string, params map[string]string) error {
 	clusterContext := p.getClusterContext()
+	Logf("[INFO]", "[%s] UnfenceIP: removing iptables block for CIDR %s (DaemonSet %s)", clusterContext, targetCIDR, IptablesDaemonSetName)
 	Logf("[DEBUG]", "[%s] Starting UnfenceIP operation for CIDR %s using DaemonSet %s", clusterContext, targetCIDR, IptablesDaemonSetName)
 
 	if !p.deployed {
@@ -174,30 +183,45 @@ func (p *IptablesFaultProvider) VerifyConnectivity(ctx context.Context, targetCI
 	clusterContext := p.getClusterContext()
 	Logf("[DEBUG]", "[%s] Starting connectivity verification for CIDR %s (expected fenced: %t) using DaemonSet %s", clusterContext, targetCIDR, expectedFenced, IptablesDaemonSetName)
 
-	if !p.deployed {
-		Logf("[ERROR]", "[%s] Cannot verify connectivity for IP %s: iptables DaemonSet %s not deployed", clusterContext, targetCIDR, IptablesDaemonSetName)
+	// Initial reachability check does not require the iptables DaemonSet; only fenced-state checks need rules in place.
+	if !p.deployed && expectedFenced {
+		Logf("[ERROR]", "[%s] Cannot verify fenced connectivity for %s: iptables DaemonSet %s not ready", clusterContext, targetCIDR, IptablesDaemonSetName)
 		return false, fmt.Errorf("[%s] iptables DaemonSet %s not deployed", clusterContext, IptablesDaemonSetName)
 	}
 
 	// Extract IP from CIDR if needed
 	targetIP := strings.Split(targetCIDR, "/")[0]
 	Logf("[DEBUG]", "[%s] Extracted target IP %s from CIDR %s for ping test", clusterContext, targetIP, targetCIDR)
-	// Create a simple ping job to test connectivity
+
+	pingSucceeded, err := p.runPingJob(ctx, targetIP)
+	if err != nil {
+		return false, err
+	}
+
+	// Check if the result matches expectations
+	if expectedFenced {
+		result := !pingSucceeded
+		Logf("[INFO]", "[%s] VerifyConnectivity %s: expected fenced=%t, ping ok=%t, match=%t", clusterContext, targetCIDR, expectedFenced, pingSucceeded, result)
+		return result, nil
+	}
+	Logf("[INFO]", "[%s] VerifyConnectivity %s: expected reachable=%t, ping ok=%t, match=%t", clusterContext, targetCIDR, !expectedFenced, pingSucceeded, pingSucceeded)
+	return pingSucceeded, nil
+}
+
+// runPingJob creates a ping Job in the workload namespace and returns whether ping succeeded.
+func (p *IptablesFaultProvider) runPingJob(ctx context.Context, targetIP string) (bool, error) {
 	pingJob := p.createPingJob(targetIP)
 	if err := p.config.Client.Create(ctx, pingJob); err != nil {
-		Logf("[ERROR]", "Failed to create ping job for connectivity verification of IP %s: %v", targetCIDR, err)
+		Logf("[ERROR]", "Failed to create ping job for connectivity verification of IP %s: %v", targetIP, err)
 		return false, fmt.Errorf("failed to create ping job: %w", err)
 	}
 
 	defer func() {
-		// Clean up ping job
 		if err := p.config.Client.Delete(ctx, pingJob); err != nil {
-			// Log but don't fail - this is cleanup
 			Logf("[WARNING]", "Failed to delete ping job: %v", err)
 		}
 	}()
 
-	// Wait for job completion with timeout
 	timeout := 60 * time.Second
 	checkInterval := 5 * time.Second
 
@@ -213,20 +237,17 @@ func (p *IptablesFaultProvider) VerifyConnectivity(ctx context.Context, targetCI
 		}
 
 		if job.Status.Succeeded > 0 {
-			// Ping succeeded
 			pingSucceeded = true
 			jobCompleted = true
 			return true, nil
 		}
 
 		if job.Status.Failed > 0 {
-			// Ping failed
 			pingSucceeded = false
 			jobCompleted = true
 			return true, nil
 		}
 
-		// Job still running, continue waiting
 		return false, nil
 	})
 
@@ -240,18 +261,7 @@ func (p *IptablesFaultProvider) VerifyConnectivity(ctx context.Context, targetCI
 		return false, fmt.Errorf("ping job to %s did not complete within timeout", targetIP)
 	}
 
-	// Check if the result matches expectations
-	if expectedFenced {
-		// We expect the target to be unreachable (fenced)
-		result := !pingSucceeded
-		Logf("[DEBUG]", "Connectivity verification for %s: expected fenced=%t, ping succeeded=%t, result matches=%t", targetCIDR, expectedFenced, pingSucceeded, result)
-		return result, nil
-	} else {
-		// We expect the target to be reachable (unfenced)
-		result := pingSucceeded
-		Logf("[DEBUG]", "Connectivity verification for %s: expected fenced=%t, ping succeeded=%t, result matches=%t", targetCIDR, expectedFenced, pingSucceeded, result)
-		return result, nil
-	}
+	return pingSucceeded, nil
 }
 
 func (p *IptablesFaultProvider) Cleanup(ctx context.Context) error {
@@ -276,16 +286,21 @@ func (p *IptablesFaultProvider) Cleanup(ctx context.Context) error {
 		}
 	}
 
-	// Delete the DaemonSet if deployed
-	if p.deployed && p.daemonSet != nil {
-		Logf("[DEBUG]", "Deleting DaemonSet %s during cleanup", p.daemonSet.Name)
+	// Delete the DaemonSet only if this provider created it (suite-level DS stays for other tests).
+	if p.deployed && p.daemonSet != nil && p.ownsDaemonSet {
+		Logf("[DEBUG]", "Deleting provider-owned DaemonSet %s/%s during cleanup", p.dsNamespace, p.daemonSet.Name)
 		if err := p.config.Client.Delete(ctx, p.daemonSet); err != nil {
 			Logf("[ERROR]", "Failed to delete DaemonSet %s during cleanup: %v", p.daemonSet.Name, err)
 			errors = append(errors, fmt.Sprintf("failed to delete DaemonSet %s: %v", p.daemonSet.Name, err))
 		}
+	} else if p.deployed && p.daemonSet != nil && !p.ownsDaemonSet {
+		Logf("[INFO]", "Leaving adopted iptables DaemonSet %s/%s in place (suite or shared resource)", p.dsNamespace, p.daemonSet.Name)
 	}
 
 	p.deployed = false
+	p.ownsDaemonSet = false
+	p.dsNamespace = ""
+	p.daemonSet = nil
 	p.activeFenceRules = make([]string, 0)
 
 	if len(errors) > 0 {
@@ -332,14 +347,75 @@ func (p *IptablesFaultProvider) getClusterContext() string {
 	return fmt.Sprintf("namespace:%s", p.config.Namespace)
 }
 
+// daemonSetSearchNamespaces lists namespaces to probe for an existing suite-deployed DaemonSet.
+func (p *IptablesFaultProvider) daemonSetSearchNamespaces() []string {
+	seen := make(map[string]struct{})
+	var out []string
+	add := func(ns string) {
+		if ns == "" {
+			return
+		}
+		if _, ok := seen[ns]; ok {
+			return
+		}
+		seen[ns] = struct{}{}
+		out = append(out, ns)
+	}
+	add(os.Getenv(EnvIptablesDaemonSetNamespace))
+	add(defaultIptablesSuiteDSNamespace)
+	add(p.config.Namespace)
+	return out
+}
+
+func (p *IptablesFaultProvider) ensureDaemonSet(ctx context.Context) error {
+	if p.deployed && p.daemonSet != nil {
+		return nil
+	}
+	return p.deployDaemonSet(ctx)
+}
+
+// tryAdoptExistingDaemonSet looks for csi-addons-iptables-manager in known namespaces (e.g. suite BeforeSuite).
+func (p *IptablesFaultProvider) tryAdoptExistingDaemonSet(ctx context.Context) (bool, error) {
+	clusterContext := p.getClusterContext()
+	for _, ns := range p.daemonSetSearchNamespaces() {
+		var ds appsv1.DaemonSet
+		err := p.config.Client.Get(ctx, client.ObjectKey{Namespace: ns, Name: IptablesDaemonSetName}, &ds)
+		if err != nil {
+			if apierrors.IsNotFound(err) {
+				continue
+			}
+			return false, fmt.Errorf("[%s] get DaemonSet %s/%s: %w", clusterContext, ns, IptablesDaemonSetName, err)
+		}
+		p.daemonSet = &ds
+		p.dsNamespace = ns
+		p.ownsDaemonSet = false
+		Logf("[INFO]", "[%s] Adopted existing iptables DaemonSet %s/%s (not owned — will not delete on Cleanup)", clusterContext, ns, IptablesDaemonSetName)
+		if err := p.waitForDaemonSetReady(ctx); err != nil {
+			return false, err
+		}
+		p.deployed = true
+		return true, nil
+	}
+	return false, nil
+}
+
 // deployDaemonSet creates and deploys the iptables management DaemonSet and ConfigMap
 func (p *IptablesFaultProvider) deployDaemonSet(ctx context.Context) error {
 	clusterContext := p.getClusterContext()
-	Logf("[INFO]", "[%s] Deploying iptables DaemonSet %s in namespace %s", clusterContext, IptablesDaemonSetName, p.config.Namespace)
+
+	if adopted, err := p.tryAdoptExistingDaemonSet(ctx); err != nil {
+		return err
+	} else if adopted {
+		return nil
+	}
+
+	p.dsNamespace = p.config.Namespace
+	p.ownsDaemonSet = true
+	Logf("[INFO]", "[%s] Deploying iptables DaemonSet %s in namespace %s", clusterContext, IptablesDaemonSetName, p.dsNamespace)
 
 	// Create DaemonSet directly without ConfigMap
 	p.daemonSet = p.createIptablesDaemonSet()
-	Logf("[DEBUG]", "[%s] Creating DaemonSet %s in namespace %s", clusterContext, p.daemonSet.Name, p.daemonSet.Namespace)
+	Logf("[DEBUG]", "[%s] Creating DaemonSet %s in namespace %s", clusterContext, p.daemonSet.Name, p.dsNamespace)
 	if err := p.config.Client.Create(ctx, p.daemonSet); err != nil {
 		Logf("[ERROR]", "[%s] Failed to create DaemonSet %s: %v", clusterContext, p.daemonSet.Name, err)
 		return fmt.Errorf("[%s] failed to create DaemonSet %s: %w", clusterContext, p.daemonSet.Name, err)
@@ -378,6 +454,9 @@ func (p *IptablesFaultProvider) deployDaemonSet(ctx context.Context) error {
 
 // createIptablesDaemonSet creates the DaemonSet manifest for iptables operations using templates
 func (p *IptablesFaultProvider) createIptablesDaemonSet() *appsv1.DaemonSet {
+	if p.dsNamespace == "" {
+		p.dsNamespace = p.config.Namespace
+	}
 	// Get configuration from environment or use defaults
 	image := os.Getenv(EnvIptablesImage)
 	if image == "" {
@@ -404,7 +483,7 @@ func (p *IptablesFaultProvider) createIptablesDaemonSet() *appsv1.DaemonSet {
 	}
 
 	data := TemplateData{
-		Namespace:    p.config.Namespace,
+		Namespace:    p.dsNamespace,
 		Image:        image,
 		NodeSelector: nodeSelector,
 	}
@@ -505,7 +584,7 @@ func (p *IptablesFaultProvider) waitForDaemonSetReady(ctx context.Context) error
 		var ds appsv1.DaemonSet
 		if err := p.config.Client.Get(ctx, client.ObjectKey{
 			Name:      IptablesDaemonSetName,
-			Namespace: p.config.Namespace,
+			Namespace: p.dsNamespace,
 		}, &ds); err != nil {
 			Logf("[ERROR]", "[%s] Failed to get DaemonSet %s status: %v", clusterContext, IptablesDaemonSetName, err)
 			return false, err
@@ -578,9 +657,13 @@ func (p *IptablesFaultProvider) waitForDaemonSetReady(ctx context.Context) error
 // getDaemonSetPods returns all ready pods belonging to the iptables DaemonSet
 func (p *IptablesFaultProvider) getDaemonSetPods(ctx context.Context) ([]corev1.Pod, error) {
 	podList := &corev1.PodList{}
+	ns := p.dsNamespace
+	if ns == "" {
+		ns = p.config.Namespace
+	}
 	listOptions := []client.ListOption{
 		client.MatchingLabels{"app": "csi-addons-iptables-manager"},
-		client.InNamespace(p.config.Namespace),
+		client.InNamespace(ns),
 	}
 
 	if err := p.config.Client.List(ctx, podList, listOptions...); err != nil {
@@ -600,7 +683,11 @@ func (p *IptablesFaultProvider) getDaemonSetPods(ctx context.Context) ([]corev1.
 // collectPodEvents collects events related to a specific pod
 func (p *IptablesFaultProvider) collectPodEvents(ctx context.Context, podName string) (string, error) {
 	eventList := &corev1.EventList{}
-	if err := p.config.Client.List(ctx, eventList, client.InNamespace(p.config.Namespace)); err != nil {
+	ns := p.dsNamespace
+	if ns == "" {
+		ns = p.config.Namespace
+	}
+	if err := p.config.Client.List(ctx, eventList, client.InNamespace(ns)); err != nil {
 		return "", err
 	}
 
@@ -648,14 +735,18 @@ func (p *IptablesFaultProvider) executeIptablesCommand(ctx context.Context, targ
 	clusterContext := p.getClusterContext()
 	Logf("[DEBUG]", "[%s] Executing %s command for CIDR %s on DaemonSet pods", clusterContext, action, targetCIDR)
 
-	if p.daemonSet == nil {
-		return fmt.Errorf("DaemonSet not created")
+	if err := p.ensureDaemonSet(ctx); err != nil {
+		return err
 	}
 
 	// Get all DaemonSet pods
 	podList := &corev1.PodList{}
 	labelSelector := client.MatchingLabels{"app": "csi-addons-iptables-manager"}
-	if err := p.config.Client.List(ctx, podList, client.InNamespace(p.config.Namespace), labelSelector); err != nil {
+	ns := p.dsNamespace
+	if ns == "" {
+		ns = p.config.Namespace
+	}
+	if err := p.config.Client.List(ctx, podList, client.InNamespace(ns), labelSelector); err != nil {
 		return fmt.Errorf("failed to list DaemonSet pods: %w", err)
 	}
 
@@ -736,7 +827,7 @@ func (p *IptablesFaultProvider) executeIptablesCommand(ctx context.Context, targ
 
 // createPingJob creates a Kubernetes Job that pings the target IP to test connectivity
 func (p *IptablesFaultProvider) createPingJob(targetIP string) *batchv1.Job {
-	jobName := fmt.Sprintf("ping-test-%s-%d", strings.ReplaceAll(targetIP, ".", "-"), time.Now().Unix())
+	jobName := fmt.Sprintf("ping-test-%s-%d", strings.ReplaceAll(targetIP, ".", "-"), time.Now().UnixNano())
 
 	return &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
@@ -848,7 +939,15 @@ func (p *IptablesFaultProvider) collectDaemonSetLogs(ctx context.Context) error 
 // execCommandInPod executes a command in a pod using a privileged Job on the same node
 func (p *IptablesFaultProvider) execCommandInPod(ctx context.Context, pod *corev1.Pod, command string) error {
 	// Create a privileged Job on the same node to execute iptables commands
-	jobName := fmt.Sprintf("iptables-exec-%s-%d", strings.ReplaceAll(pod.Spec.NodeName, ".", "-"), time.Now().Unix())
+	jobName := fmt.Sprintf("iptables-exec-%s-%d", strings.ReplaceAll(pod.Spec.NodeName, ".", "-"), time.Now().UnixNano())
+
+	// Trailing newline before "&&" breaks POSIX sh (dash): "echo ...\n&& ..." is a syntax error.
+	script := strings.TrimRight(command, "\n\t\r ") + " && echo 'Command completed successfully'"
+	img := p.getIptablesImage()
+	pullPolicy := corev1.PullIfNotPresent
+	if strings.HasPrefix(img, "localhost/") {
+		pullPolicy = corev1.PullNever
+	}
 
 	job := &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
@@ -871,9 +970,9 @@ func (p *IptablesFaultProvider) execCommandInPod(ctx context.Context, pod *corev
 					},
 					Containers: []corev1.Container{{
 						Name:            "iptables-exec",
-						Image:           p.getIptablesImage(),
-						ImagePullPolicy: corev1.PullNever,
-						Command:         []string{"sh", "-c", command + " && echo 'Command completed successfully'"},
+						Image:           img,
+						ImagePullPolicy: pullPolicy,
+						Command:         []string{"sh", "-c", script},
 						SecurityContext: &corev1.SecurityContext{
 							Privileged: &[]bool{true}[0],
 							Capabilities: &corev1.Capabilities{
@@ -921,17 +1020,17 @@ func (p *IptablesFaultProvider) execCommandInPod(ctx context.Context, pod *corev
 func (p *IptablesFaultProvider) emergencyCleanup(ctx context.Context) error {
 	Logf("[DEBUG]", "Performing emergency cleanup of leftover fence rules...")
 
-	// Check if there are existing DaemonSets that might have leftover rules
-	daemonSetList := &appsv1.DaemonSetList{}
-	labelSelector := client.MatchingLabels{"app": "csi-addons-iptables-manager"}
-	if err := p.config.Client.List(ctx, daemonSetList, labelSelector); err != nil {
-		Logf("[DEBUG]", "Failed to list existing DaemonSets: %v", err)
-		return nil // Not a critical error
-	}
-
-	// For each existing DaemonSet, clean up all fence rules
-	for _, ds := range daemonSetList.Items {
-		Logf("[DEBUG]", "Found existing DaemonSet %s, cleaning up fence rules", ds.Name)
+	for _, ns := range p.daemonSetSearchNamespaces() {
+		var ds appsv1.DaemonSet
+		err := p.config.Client.Get(ctx, client.ObjectKey{Namespace: ns, Name: IptablesDaemonSetName}, &ds)
+		if err != nil {
+			if apierrors.IsNotFound(err) {
+				continue
+			}
+			Logf("[DEBUG]", "Get DaemonSet %s/%s: %v", ns, IptablesDaemonSetName, err)
+			continue
+		}
+		Logf("[DEBUG]", "Found existing DaemonSet %s/%s, cleaning up fence rules", ds.Namespace, ds.Name)
 		if err := p.cleanupAllFenceRules(ctx, &ds); err != nil {
 			Logf("[WARNING]", "Failed to cleanup rules for DaemonSet %s: %v", ds.Name, err)
 		}
@@ -983,7 +1082,13 @@ func (p *IptablesFaultProvider) cleanupAllFenceRules(ctx context.Context, ds *ap
 
 // createCleanupJob creates a job to run cleanup commands on a specific node
 func (p *IptablesFaultProvider) createCleanupJob(ctx context.Context, targetPod *corev1.Pod, command string) error {
-	jobName := fmt.Sprintf("iptables-cleanup-%s-%d", strings.ReplaceAll(targetPod.Spec.NodeName, ".", "-"), time.Now().Unix())
+	jobName := fmt.Sprintf("iptables-cleanup-%s-%d", strings.ReplaceAll(targetPod.Spec.NodeName, ".", "-"), time.Now().UnixNano())
+
+	img := p.getIptablesImage()
+	cleanupPull := corev1.PullIfNotPresent
+	if strings.HasPrefix(img, "localhost/") {
+		cleanupPull = corev1.PullNever
+	}
 
 	job := &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
@@ -1006,8 +1111,8 @@ func (p *IptablesFaultProvider) createCleanupJob(ctx context.Context, targetPod 
 					},
 					Containers: []corev1.Container{{
 						Name:            "cleanup",
-						Image:           p.getIptablesImage(),
-						ImagePullPolicy: corev1.PullNever,
+						Image:           img,
+						ImagePullPolicy: cleanupPull,
 						Command:         []string{"sh", "-c", command},
 						SecurityContext: &corev1.SecurityContext{
 							Privileged: &[]bool{true}[0],
@@ -1051,5 +1156,5 @@ func (p *IptablesFaultProvider) getIptablesImage() string {
 	if image := p.config.ProviderParams["image"]; image != "" {
 		return image
 	}
-	return DefaultIptablesImage
+	return DefaultIptablesImageWithRegistry
 }

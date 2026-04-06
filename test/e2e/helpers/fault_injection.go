@@ -111,7 +111,7 @@ type FaultInjectionConfig struct {
 
 // NewFaultInjectionProvider creates a new fault injection provider based on configuration.
 // The provider type is determined by the E2E_FAULT_INJECTOR environment variable,
-// with fallback to NetworkFence for backward compatibility.
+// with fallback to iptables when unset (design default).
 //
 // Environment variable values:
 //   - "networkfence": Uses NetworkFence CRDs (requires CSI-Addons controller)
@@ -137,7 +137,7 @@ func NewFaultInjectionProvider(config FaultInjectionConfig) (PeerFenceProvider, 
 		case string(FaultInjectorNone):
 			providerType = FaultInjectorNone
 		case "":
-			// Default to iptables for better cluster compatibility
+			// Design default: iptables-based fault injection
 			providerType = FaultInjectorIptables
 		default:
 			return nil, fmt.Errorf("unsupported fault injector type: %s (supported: networkfence, iptables, none)", envType)
@@ -169,7 +169,7 @@ func GetFaultInjectorTypeFromEnv() FaultInjectorType {
 	case string(FaultInjectorNone):
 		return FaultInjectorNone
 	default:
-		return FaultInjectorIptables // Default to iptables for better compatibility
+		return FaultInjectorIptables
 	}
 }
 
