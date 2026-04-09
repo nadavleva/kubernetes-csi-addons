@@ -23,6 +23,7 @@ import (
 	"strings"
 	"time"
 
+	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -104,6 +105,10 @@ type FaultInjectionConfig struct {
 
 	// Namespace for provider resources (DaemonSets, etc.)
 	Namespace string
+
+	// RESTConfig is the cluster REST client config. Required for iptables fence/unfence: commands run only
+	// via exec into the iptables DaemonSet pods (same cluster as Client).
+	RESTConfig *rest.Config
 
 	// ProviderParams contains provider-specific configuration
 	ProviderParams map[string]string
