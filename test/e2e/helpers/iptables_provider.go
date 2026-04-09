@@ -22,6 +22,7 @@ import (
 	"embed"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"text/template"
 	"time"
@@ -29,11 +30,15 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	eventsv1 "k8s.io/api/events/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/apimachinery/pkg/util/yaml"
+	"k8s.io/client-go/kubernetes"
+	clientscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/tools/remotecommand"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -73,7 +78,41 @@ const (
 	EnvIptablesCleanupTimeout       = "E2E_IPTABLES_CLEANUP_TIMEOUT"
 	EnvIptablesDaemonSetNamespace   = "E2E_IPTABLES_DAEMONSET_NAMESPACE"
 	defaultIptablesSuiteDSNamespace = "csi-addons-system"
+
+	// IptablesFenceStateConfigMapName holds active fence CIDRs for visibility (kubectl get -n <ds-ns> cm <name>).
+	IptablesFenceStateConfigMapName = "csi-addons-iptables-fence-state"
+
+	iptablesFenceEventComponent = "csi-addons-e2e-iptables"
+
+	// DaemonSet annotations: survive default event TTL (~1h). Inspect: kubectl -n <ns> get ds csi-addons-iptables-manager -o yaml | grep csi-addons.io/e2e-iptables
+	annotationIptablesFenceReason  = "csi-addons.io/e2e-iptables-last-reason"
+	annotationIptablesFenceUTC     = "csi-addons.io/e2e-iptables-last-utc"
+	annotationIptablesFenceSummary = "csi-addons.io/e2e-iptables-last-summary"
+	iptablesFenceEventAction       = "FenceStateChange"
+
+	// Event reasons (kubectl get events -n <ds-ns>; involved object may be listed as regarding, not involvedObject on events.k8s.io)
+	EventReasonIptablesFenceStarting = "IptablesFenceStarting"
+	EventReasonIptablesFenceApplied  = "IptablesFenceApplied"
+	EventReasonIptablesFenceRemoved  = "IptablesFenceRemoved"
+	EventReasonIptablesFenceCleanup  = "IptablesFenceTeardownCleanup"
 )
+
+// csiAddonsStagedRejectCleanupShell removes OUTPUT rules inserted by FenceIP (--reject-with icmp-host-unreachable).
+// It intentionally does not remove other host firewall REJECT rules.
+const csiAddonsStagedRejectCleanupShell = `
+			echo "[$(date)] CSI-Addons: removing staged OUTPUT REJECT rules (icmp-host-unreachable only)"
+			for ipt_cmd in iptables-legacy iptables-nft iptables; do
+				if command -v $ipt_cmd >/dev/null 2>&1; then
+					echo "[$(date)] Using $ipt_cmd for staged fence cleanup"
+					$ipt_cmd -S OUTPUT | grep 'icmp-host-unreachable' | sed 's/^-A/-D/' | while read rule; do
+						echo "[$(date)] Removing rule: $rule"
+						$ipt_cmd $rule 2>/dev/null || true
+					done
+					break
+				fi
+			done
+			echo "[$(date)] CSI-Addons staged fence cleanup finished"
+`
 
 // IptablesFaultProvider implements PeerFenceProvider using iptables rules via privileged DaemonSets.
 // This provider creates a privileged DaemonSet with NET_ADMIN capabilities to manipulate
@@ -90,9 +129,6 @@ type IptablesFaultProvider struct {
 
 	// Track active fence rules for cleanup
 	activeFenceRules []string
-
-	// Persistent state for emergency cleanup
-	persistentStateConfigMap *corev1.ConfigMap
 }
 
 // NewIptablesFaultProvider creates a new iptables-based fault injection provider.
@@ -133,17 +169,34 @@ func (p *IptablesFaultProvider) FenceIP(ctx context.Context, targetCIDR string, 
 		Logf("[DEBUG]", "[%s] Using existing DaemonSet %s in namespace %s", clusterContext, IptablesDaemonSetName, p.dsNamespace)
 	}
 
-	// Add the rule to the DaemonSet pods
+	// Record event + ConfigMap *before* iptables runs: fencing the API/control-plane node breaks subsequent API calls.
+	p.emitIptablesFenceEvent(ctx, EventReasonIptablesFenceStarting, fmt.Sprintf(
+		"About to apply OUTPUT REJECT to %s (workload namespace %q). If this CIDR is the apiserver or node network, API access may fail until unfence.",
+		targetCIDR, p.config.Namespace))
+	if err := p.syncFenceStateConfigMapPreApply(ctx, targetCIDR); err != nil {
+		Logf("[WARNING]", "sync pre-apply fence state ConfigMap: %v", err)
+	}
+
 	Logf("[DEBUG]", "[%s] Adding iptables fence rule for CIDR %s to DaemonSet pods", clusterContext, targetCIDR)
 	if err := p.executeIptablesCommand(ctx, targetCIDR, "fence"); err != nil {
 		Logf("[ERROR]", "[%s] Failed to add iptables fence rule for IP %s to DaemonSet %s: %v", clusterContext, targetCIDR, IptablesDaemonSetName, err)
 		return fmt.Errorf("[%s] failed to add iptables fence rule to %s: %w", clusterContext, IptablesDaemonSetName, err)
 	}
 
-	// Track the rule for cleanup
-	p.activeFenceRules = append(p.activeFenceRules, targetCIDR)
+	if !slices.Contains(p.activeFenceRules, targetCIDR) {
+		p.activeFenceRules = append(p.activeFenceRules, targetCIDR)
+	}
 
-	Logf("[INFO]", "[%s] Successfully fenced IP %s using iptables", clusterContext, targetCIDR)
+	// Best-effort: API may be unreachable if the fenced CIDR includes the control-plane node/network.
+	if err := p.syncFenceStateConfigMap(ctx); err != nil {
+		Logf("[WARNING]", "post-fence sync fence state ConfigMap (may fail if API path is blocked): %v", err)
+	}
+	p.emitIptablesFenceEvent(ctx, EventReasonIptablesFenceApplied, fmt.Sprintf(
+		"Applied OUTPUT REJECT to %s (workload namespace %q). State: kubectl -n %s get configmap %s -o yaml",
+		targetCIDR, p.config.Namespace, p.dsNamespace, IptablesFenceStateConfigMapName))
+
+	Logf("[INFO]", "[%s] Successfully fenced %s using iptables (tracked CIDRs: %v; ConfigMap %s/%s)",
+		clusterContext, targetCIDR, p.activeFenceRules, p.dsNamespace, IptablesFenceStateConfigMapName)
 
 	// Give DaemonSet pods time to reload and apply the rules
 	time.Sleep(5 * time.Second)
@@ -168,10 +221,15 @@ func (p *IptablesFaultProvider) UnfenceIP(ctx context.Context, targetCIDR string
 		return fmt.Errorf("[%s] failed to add iptables unfence rule to %s: %w", clusterContext, IptablesDaemonSetName, err)
 	}
 
-	// Remove from active rules tracking
 	p.removeFromActiveRules(targetCIDR)
 
-	Logf("[INFO]", "[%s] Successfully unfenced IP %s using iptables", clusterContext, targetCIDR)
+	p.emitIptablesFenceEvent(ctx, EventReasonIptablesFenceRemoved, fmt.Sprintf(
+		"Removed OUTPUT REJECT for %s (workload namespace %q)", targetCIDR, p.config.Namespace))
+	if err := p.syncFenceStateConfigMap(ctx); err != nil {
+		Logf("[WARNING]", "sync fence state ConfigMap after unfence: %v", err)
+	}
+
+	Logf("[INFO]", "[%s] Successfully unfenced %s using iptables (remaining tracked: %v)", clusterContext, targetCIDR, p.activeFenceRules)
 
 	// Give DaemonSet pods time to reload and apply the rules
 	time.Sleep(5 * time.Second)
@@ -278,13 +336,22 @@ func (p *IptablesFaultProvider) Cleanup(ctx context.Context) error {
 		}
 	}
 
-	// Clean up any active fence rules
-	for _, targetCIDR := range p.activeFenceRules {
+	toUnfence := slices.Clone(p.activeFenceRules)
+	for _, targetCIDR := range toUnfence {
 		if err := p.UnfenceIP(ctx, targetCIDR, nil); err != nil {
 			Logf("[ERROR]", "Failed to unfence %s during cleanup: %v", targetCIDR, err)
 			errors = append(errors, fmt.Sprintf("failed to unfence %s: %v", targetCIDR, err))
 		}
 	}
+
+	if err := p.removeCSIAddonsStagedRejectRulesOnAllManagerPods(ctx); err != nil {
+		Logf("[WARNING]", "teardown: staged iptables sweep on manager pods: %v", err)
+	}
+	if err := p.deleteFenceStateConfigMap(ctx); err != nil {
+		Logf("[WARNING]", "teardown: delete fence state ConfigMap: %v", err)
+	}
+	p.emitIptablesFenceEvent(ctx, EventReasonIptablesFenceCleanup, fmt.Sprintf(
+		"Provider Cleanup finished for workload namespace %q (per-CIDR unfence + staged REJECT sweep)", p.config.Namespace))
 
 	// Delete the DaemonSet only if this provider created it (suite-level DS stays for other tests).
 	if p.deployed && p.daemonSet != nil && p.ownsDaemonSet {
@@ -345,6 +412,221 @@ func (p *IptablesFaultProvider) getClusterContext() string {
 	}
 	// Fallback to namespace info
 	return fmt.Sprintf("namespace:%s", p.config.Namespace)
+}
+
+func (p *IptablesFaultProvider) emitIptablesFenceEvent(ctx context.Context, reason, message string) {
+	if p.dsNamespace == "" {
+		return
+	}
+	key := client.ObjectKey{Namespace: p.dsNamespace, Name: IptablesDaemonSetName}
+	var ds appsv1.DaemonSet
+	if err := p.config.Client.Get(ctx, key, &ds); err != nil {
+		Logf("[WARNING]", "iptables fence event skipped (%s): get DaemonSet %s: %v", reason, key, err)
+		return
+	}
+
+	// Annotations persist after Kubernetes event garbage collection (default ~1h).
+	p.patchDaemonSetIptablesFenceAnnotations(ctx, &ds, reason, message)
+
+	note := truncateIptablesEventNote(message)
+	r := truncateASCII(reason, 128)
+	inst := iptablesFenceReportingInstance()
+
+	ev1 := &eventsv1.Event{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: eventsv1.SchemeGroupVersion.String(),
+			Kind:       "Event",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace:    p.dsNamespace,
+			GenerateName: "iptables-fence-",
+		},
+		EventTime:           metav1.NowMicro(),
+		ReportingController: iptablesFenceEventComponent,
+		ReportingInstance:   inst,
+		Action:              truncateASCII(iptablesFenceEventAction, 128),
+		Reason:              r,
+		Regarding: corev1.ObjectReference{
+			Kind:       "DaemonSet",
+			Namespace:  ds.Namespace,
+			Name:       ds.Name,
+			UID:        ds.UID,
+			APIVersion: "apps/v1",
+		},
+		Note: note,
+		Type: corev1.EventTypeNormal,
+	}
+	if err := p.config.Client.Create(ctx, ev1); err != nil {
+		Logf("[WARNING]", "create events.k8s.io/v1 Event (%s): %v — falling back to core/v1 Event", reason, err)
+		p.emitLegacyCoreV1Event(ctx, &ds, r, message)
+		return
+	}
+	Logf("[DEBUG]", "recorded events.k8s.io/v1 Event reason=%s namespace=%s", r, p.dsNamespace)
+}
+
+func (p *IptablesFaultProvider) patchDaemonSetIptablesFenceAnnotations(ctx context.Context, ds *appsv1.DaemonSet, reason, message string) {
+	original := ds.DeepCopy()
+	if ds.Annotations == nil {
+		ds.Annotations = map[string]string{}
+	}
+	ds.Annotations[annotationIptablesFenceReason] = truncateASCII(reason, 128)
+	ds.Annotations[annotationIptablesFenceUTC] = time.Now().UTC().Format(time.RFC3339Nano)
+	ds.Annotations[annotationIptablesFenceSummary] = truncateASCII(strings.ReplaceAll(strings.ReplaceAll(message, "\n", " "), "\r", " "), 512)
+	if err := p.config.Client.Patch(ctx, ds, client.MergeFrom(original)); err != nil {
+		Logf("[WARNING]", "patch DaemonSet %s/%s fence annotations: %v", ds.Namespace, ds.Name, err)
+	}
+}
+
+func (p *IptablesFaultProvider) emitLegacyCoreV1Event(ctx context.Context, ds *appsv1.DaemonSet, reason, message string) {
+	now := metav1.Now()
+	ev := &corev1.Event{
+		ObjectMeta: metav1.ObjectMeta{
+			GenerateName: "iptables-fence-",
+			Namespace:    p.dsNamespace,
+		},
+		InvolvedObject: corev1.ObjectReference{
+			Kind:       "DaemonSet",
+			Namespace:  ds.Namespace,
+			Name:       ds.Name,
+			UID:        ds.UID,
+			APIVersion: "apps/v1",
+		},
+		Reason:         reason,
+		Message:        message,
+		Type:           corev1.EventTypeNormal,
+		Source:         corev1.EventSource{Component: iptablesFenceEventComponent},
+		FirstTimestamp: now,
+		LastTimestamp:  now,
+		Count:          1,
+	}
+	if err := p.config.Client.Create(ctx, ev); err != nil {
+		Logf("[WARNING]", "failed to record core/v1 iptables fence event (%s): %v", reason, err)
+	}
+}
+
+func iptablesFenceReportingInstance() string {
+	s := fmt.Sprintf("%s-%d", iptablesFenceEventComponent, time.Now().UnixNano())
+	if len(s) > 128 {
+		return s[:128]
+	}
+	return s
+}
+
+func truncateASCII(s string, max int) string {
+	if max <= 0 {
+		return ""
+	}
+	if len(s) <= max {
+		return s
+	}
+	return s[:max]
+}
+
+func truncateIptablesEventNote(s string) string {
+	s = strings.ReplaceAll(strings.ReplaceAll(s, "\n", " "), "\r", " ")
+	return truncateASCII(s, 1024)
+}
+
+func (p *IptablesFaultProvider) fenceStateConfigMapLabels() map[string]string {
+	return map[string]string{
+		"app.kubernetes.io/name":       "csi-addons-iptables-fence-state",
+		"app.kubernetes.io/component":  "fault-injection",
+		"csi-addons.io/fault-injector": "iptables",
+	}
+}
+
+// syncFenceStateConfigMapPreApply writes ConfigMap state before OUTPUT REJECT runs (API may be lost afterward).
+func (p *IptablesFaultProvider) syncFenceStateConfigMapPreApply(ctx context.Context, targetCIDR string) error {
+	if p.dsNamespace == "" {
+		return nil
+	}
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      IptablesFenceStateConfigMapName,
+			Namespace: p.dsNamespace,
+			Labels:    p.fenceStateConfigMapLabels(),
+		},
+		Data: map[string]string{
+			"fence-phase":         "applying",
+			"applying-cidr":       targetCIDR,
+			"active-cidrs":        strings.Join(p.activeFenceRules, "\n"),
+			"workload-namespace":  p.config.Namespace,
+			"cluster-label":       p.getClusterContext(),
+			"fence-mode":          "iptables-output-reject-icmp-host-unreachable",
+			"daemonset-namespace": p.dsNamespace,
+			"updated":             time.Now().UTC().Format(time.RFC3339Nano),
+		},
+	}
+	return p.createOrUpdateFenceStateConfigMap(ctx, cm)
+}
+
+func (p *IptablesFaultProvider) syncFenceStateConfigMap(ctx context.Context) error {
+	if p.dsNamespace == "" {
+		return nil
+	}
+	if len(p.activeFenceRules) == 0 {
+		return p.deleteFenceStateConfigMap(ctx)
+	}
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      IptablesFenceStateConfigMapName,
+			Namespace: p.dsNamespace,
+			Labels:    p.fenceStateConfigMapLabels(),
+		},
+		Data: map[string]string{
+			"fence-phase":         "active",
+			"active-cidrs":        strings.Join(p.activeFenceRules, "\n"),
+			"workload-namespace":  p.config.Namespace,
+			"cluster-label":       p.getClusterContext(),
+			"fence-mode":          "iptables-output-reject-icmp-host-unreachable",
+			"daemonset-namespace": p.dsNamespace,
+			"updated":             time.Now().UTC().Format(time.RFC3339Nano),
+		},
+	}
+	return p.createOrUpdateFenceStateConfigMap(ctx, cm)
+}
+
+func (p *IptablesFaultProvider) createOrUpdateFenceStateConfigMap(ctx context.Context, cm *corev1.ConfigMap) error {
+	cmKey := client.ObjectKeyFromObject(cm)
+	existing := &corev1.ConfigMap{}
+	if err := p.config.Client.Get(ctx, cmKey, existing); err != nil {
+		if apierrors.IsNotFound(err) {
+			return p.config.Client.Create(ctx, cm)
+		}
+		return err
+	}
+	cm.ResourceVersion = existing.ResourceVersion
+	return p.config.Client.Update(ctx, cm)
+}
+
+func (p *IptablesFaultProvider) deleteFenceStateConfigMap(ctx context.Context) error {
+	if p.dsNamespace == "" {
+		return nil
+	}
+	cm := &corev1.ConfigMap{}
+	key := client.ObjectKey{Namespace: p.dsNamespace, Name: IptablesFenceStateConfigMapName}
+	if err := p.config.Client.Get(ctx, key, cm); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		return err
+	}
+	return p.config.Client.Delete(ctx, cm)
+}
+
+// removeCSIAddonsStagedRejectRulesOnAllManagerPods runs csiAddonsStagedRejectCleanupShell on every running manager pod.
+func (p *IptablesFaultProvider) removeCSIAddonsStagedRejectRulesOnAllManagerPods(ctx context.Context) error {
+	if p.dsNamespace == "" {
+		return nil
+	}
+	var ds appsv1.DaemonSet
+	if err := p.config.Client.Get(ctx, client.ObjectKey{Namespace: p.dsNamespace, Name: IptablesDaemonSetName}, &ds); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		return err
+	}
+	return p.cleanupAllFenceRules(ctx, &ds)
 }
 
 // daemonSetSearchNamespaces lists namespaces to probe for an existing suite-deployed DaemonSet.
@@ -936,84 +1218,88 @@ func (p *IptablesFaultProvider) collectDaemonSetLogs(ctx context.Context) error 
 	return nil
 }
 
-// execCommandInPod executes a command in a pod using a privileged Job on the same node
-func (p *IptablesFaultProvider) execCommandInPod(ctx context.Context, pod *corev1.Pod, command string) error {
-	// Create a privileged Job on the same node to execute iptables commands
-	jobName := fmt.Sprintf("iptables-exec-%s-%d", strings.ReplaceAll(pod.Spec.NodeName, ".", "-"), time.Now().UnixNano())
+// waitIptablesContainerReady waits until the iptables-manager container in the DaemonSet pod is ready to exec.
+func (p *IptablesFaultProvider) waitIptablesContainerReady(ctx context.Context, pod *corev1.Pod) error {
+	key := client.ObjectKeyFromObject(pod)
+	return wait.PollUntilContextTimeout(ctx, 500*time.Millisecond, 2*time.Minute, true, func(ctx context.Context) (bool, error) {
+		var fresh corev1.Pod
+		if err := p.config.Client.Get(ctx, key, &fresh); err != nil {
+			return false, err
+		}
+		if fresh.Status.Phase != corev1.PodRunning {
+			return false, nil
+		}
+		for i := range fresh.Status.ContainerStatuses {
+			cs := &fresh.Status.ContainerStatuses[i]
+			if cs.Name != IptablesContainerName {
+				continue
+			}
+			return cs.Ready && cs.State.Running != nil, nil
+		}
+		return false, nil
+	})
+}
 
+// streamExec runs a shell script inside the iptables DaemonSet container via the Kubernetes exec subresource.
+func (p *IptablesFaultProvider) streamExec(ctx context.Context, pod *corev1.Pod, script string) error {
+	if p.config.RESTConfig == nil {
+		return fmt.Errorf("RESTConfig is nil")
+	}
+	clientset, err := kubernetes.NewForConfig(p.config.RESTConfig)
+	if err != nil {
+		return fmt.Errorf("kubernetes.NewForConfig: %w", err)
+	}
+	req := clientset.CoreV1().RESTClient().Post().
+		Resource("pods").
+		Name(pod.Name).
+		Namespace(pod.Namespace).
+		SubResource("exec").
+		VersionedParams(&corev1.PodExecOptions{
+			Container: IptablesContainerName,
+			Command:   []string{"sh", "-c", script},
+			Stdout:    true,
+			Stderr:    true,
+			TTY:       false,
+		}, clientscheme.ParameterCodec)
+
+	executor, err := remotecommand.NewSPDYExecutor(p.config.RESTConfig, "POST", req.URL())
+	if err != nil {
+		return fmt.Errorf("remotecommand.NewSPDYExecutor: %w", err)
+	}
+	var stdout, stderr bytes.Buffer
+	err = executor.StreamWithContext(ctx, remotecommand.StreamOptions{
+		Stdout: &stdout,
+		Stderr: &stderr,
+	})
+	clusterContext := p.getClusterContext()
+	if err != nil {
+		Logf("[ERROR]", "[%s] pod exec %s/%s failed: %v; stderr=%s", clusterContext, pod.Namespace, pod.Name, err, strings.TrimSpace(stderr.String()))
+		return fmt.Errorf("pod exec failed: %w", err)
+	}
+	out := strings.TrimSpace(stdout.String())
+	if out != "" {
+		Logf("[INFO]", "[%s] pod exec %s/%s: %s", clusterContext, pod.Namespace, pod.Name, out)
+	}
+	if se := strings.TrimSpace(stderr.String()); se != "" {
+		Logf("[DEBUG]", "[%s] pod exec %s/%s stderr: %s", clusterContext, pod.Namespace, pod.Name, se)
+	}
+	return nil
+}
+
+// execCommandInPod runs iptables fence/unfence only by exec into the DaemonSet pod (requires RESTConfig).
+func (p *IptablesFaultProvider) execCommandInPod(ctx context.Context, pod *corev1.Pod, command string) error {
+	if p.config.RESTConfig == nil {
+		return fmt.Errorf("iptables fault injection requires FaultInjectionConfig.RESTConfig for exec into DaemonSet pods")
+	}
+	clusterContext := p.getClusterContext()
 	// Trailing newline before "&&" breaks POSIX sh (dash): "echo ...\n&& ..." is a syntax error.
 	script := strings.TrimRight(command, "\n\t\r ") + " && echo 'Command completed successfully'"
-	img := p.getIptablesImage()
-	pullPolicy := corev1.PullIfNotPresent
-	if strings.HasPrefix(img, "localhost/") {
-		pullPolicy = corev1.PullNever
+
+	Logf("[INFO]", "[%s] iptables: exec into DaemonSet pod %s/%s on node %s", clusterContext, pod.Namespace, pod.Name, pod.Spec.NodeName)
+	if err := p.waitIptablesContainerReady(ctx, pod); err != nil {
+		return fmt.Errorf("wait for iptables container ready %s/%s: %w", pod.Namespace, pod.Name, err)
 	}
-
-	job := &batchv1.Job{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      jobName,
-			Namespace: p.config.Namespace,
-			Labels: map[string]string{
-				"app":                          "csi-addons-iptables-exec",
-				"csi-addons.io/component":      "fault-injection",
-				"csi-addons.io/fault-injector": "iptables",
-			},
-		},
-		Spec: batchv1.JobSpec{
-			TTLSecondsAfterFinished: &[]int32{300}[0], // Clean up after 5 minutes
-			Template: corev1.PodTemplateSpec{
-				Spec: corev1.PodSpec{
-					HostNetwork: true,
-					NodeName:    pod.Spec.NodeName, // Run on the same node
-					SecurityContext: &corev1.PodSecurityContext{
-						RunAsUser: &[]int64{0}[0],
-					},
-					Containers: []corev1.Container{{
-						Name:            "iptables-exec",
-						Image:           img,
-						ImagePullPolicy: pullPolicy,
-						Command:         []string{"sh", "-c", script},
-						SecurityContext: &corev1.SecurityContext{
-							Privileged: &[]bool{true}[0],
-							Capabilities: &corev1.Capabilities{
-								Add: []corev1.Capability{"NET_ADMIN", "NET_RAW"},
-							},
-						},
-					}},
-					RestartPolicy: corev1.RestartPolicyNever,
-					Tolerations: []corev1.Toleration{{
-						Operator: corev1.TolerationOpExists,
-					}},
-				},
-			},
-		},
-	}
-
-	// Create and wait for the job
-	if err := p.config.Client.Create(ctx, job); err != nil {
-		return fmt.Errorf("failed to create exec job: %w", err)
-	}
-
-	// Wait for job completion
-	for i := 0; i < 30; i++ { // Wait up to 30 seconds
-		currentJob := &batchv1.Job{}
-		if err := p.config.Client.Get(ctx, client.ObjectKeyFromObject(job), currentJob); err != nil {
-			return fmt.Errorf("failed to get job status: %w", err)
-		}
-
-		if currentJob.Status.Succeeded > 0 {
-			Logf("[DEBUG]", "Exec job %s completed successfully", jobName)
-			return nil
-		}
-
-		if currentJob.Status.Failed > 0 {
-			return fmt.Errorf("exec job %s failed", jobName)
-		}
-
-		time.Sleep(1 * time.Second)
-	}
-
-	return fmt.Errorf("exec job %s timed out", jobName)
+	return p.streamExec(ctx, pod, script)
 }
 
 // emergencyCleanup performs cleanup of any leftover fence rules from previous test runs
@@ -1040,9 +1326,10 @@ func (p *IptablesFaultProvider) emergencyCleanup(ctx context.Context) error {
 	return nil
 }
 
-// cleanupAllFenceRules removes all iptables REJECT rules from DaemonSet pods
+// cleanupAllFenceRules removes CSI-Addons staged OUTPUT rules (--reject-with icmp-host-unreachable) from manager pods.
+// It does not remove unrelated host REJECT rules. Use the emergency shell script with
+// CSI_ADDONS_IPTABLES_LEGACY_FULL_REJECT=1 to strip every OUTPUT REJECT rule.
 func (p *IptablesFaultProvider) cleanupAllFenceRules(ctx context.Context, ds *appsv1.DaemonSet) error {
-	// Get all pods for this DaemonSet
 	podList := &corev1.PodList{}
 	labelSelector := client.MatchingLabels{"app": "csi-addons-iptables-manager"}
 	if err := p.config.Client.List(ctx, podList, client.InNamespace(ds.Namespace), labelSelector); err != nil {
@@ -1054,23 +1341,7 @@ func (p *IptablesFaultProvider) cleanupAllFenceRules(ctx context.Context, ds *ap
 			continue
 		}
 
-		// Use a comprehensive cleanup command that works with both legacy and nft
-		cleanupCmd := `
-			echo "[$(date)] Emergency cleanup: Removing all CSI-Addons fence rules"
-			# Try both iptables-legacy and iptables-nft
-			for ipt_cmd in iptables-legacy iptables-nft iptables; do
-				if command -v $ipt_cmd >/dev/null 2>&1; then
-					echo "[$(date)] Using $ipt_cmd for cleanup"
-					# Remove all REJECT rules from OUTPUT chain (safer than flushing entire chain)
-					$ipt_cmd -S OUTPUT | grep "\-j REJECT" | sed 's/^-A/-D/' | while read rule; do
-						echo "[$(date)] Removing rule: $rule"
-						$ipt_cmd $rule 2>/dev/null || true
-					done
-					break
-				fi
-			done
-			echo "[$(date)] Emergency cleanup completed"
-		`
+		cleanupCmd := csiAddonsStagedRejectCleanupShell
 
 		if err := p.createCleanupJob(ctx, &pod, cleanupCmd); err != nil {
 			Logf("[WARNING]", "Failed to cleanup pod %s: %v", pod.Name, err)
@@ -1080,75 +1351,18 @@ func (p *IptablesFaultProvider) cleanupAllFenceRules(ctx context.Context, ds *ap
 	return nil
 }
 
-// createCleanupJob creates a job to run cleanup commands on a specific node
+// createCleanupJob runs cleanup only by exec into the DaemonSet pod (same as fence/unfence).
 func (p *IptablesFaultProvider) createCleanupJob(ctx context.Context, targetPod *corev1.Pod, command string) error {
-	jobName := fmt.Sprintf("iptables-cleanup-%s-%d", strings.ReplaceAll(targetPod.Spec.NodeName, ".", "-"), time.Now().UnixNano())
-
-	img := p.getIptablesImage()
-	cleanupPull := corev1.PullIfNotPresent
-	if strings.HasPrefix(img, "localhost/") {
-		cleanupPull = corev1.PullNever
+	if p.config.RESTConfig == nil {
+		Logf("[WARNING]", "iptables emergency cleanup skipped for pod %s/%s: RESTConfig is nil", targetPod.Namespace, targetPod.Name)
+		return nil
 	}
-
-	job := &batchv1.Job{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      jobName,
-			Namespace: p.config.Namespace,
-			Labels: map[string]string{
-				"app":                          "csi-addons-iptables-cleanup",
-				"csi-addons.io/component":      "fault-injection",
-				"csi-addons.io/fault-injector": "iptables",
-			},
-		},
-		Spec: batchv1.JobSpec{
-			TTLSecondsAfterFinished: &[]int32{60}[0], // Quick cleanup
-			Template: corev1.PodTemplateSpec{
-				Spec: corev1.PodSpec{
-					HostNetwork: true,
-					NodeName:    targetPod.Spec.NodeName,
-					SecurityContext: &corev1.PodSecurityContext{
-						RunAsUser: &[]int64{0}[0],
-					},
-					Containers: []corev1.Container{{
-						Name:            "cleanup",
-						Image:           img,
-						ImagePullPolicy: cleanupPull,
-						Command:         []string{"sh", "-c", command},
-						SecurityContext: &corev1.SecurityContext{
-							Privileged: &[]bool{true}[0],
-							Capabilities: &corev1.Capabilities{
-								Add: []corev1.Capability{"NET_ADMIN", "NET_RAW"},
-							},
-						},
-					}},
-					RestartPolicy: corev1.RestartPolicyNever,
-					Tolerations: []corev1.Toleration{{
-						Operator: corev1.TolerationOpExists,
-					}},
-				},
-			},
-		},
+	script := strings.TrimRight(command, "\n\t\r ")
+	if err := p.waitIptablesContainerReady(ctx, targetPod); err != nil {
+		return fmt.Errorf("wait for iptables pod %s/%s before cleanup exec: %w", targetPod.Namespace, targetPod.Name, err)
 	}
-
-	// Create job and don't wait (fire-and-forget cleanup)
-	if err := p.config.Client.Create(ctx, job); err != nil {
-		return fmt.Errorf("failed to create cleanup job: %w", err)
-	}
-
-	// Quick check if job succeeded (but don't block)
-	go func() {
-		time.Sleep(10 * time.Second)
-		currentJob := &batchv1.Job{}
-		if err := p.config.Client.Get(context.Background(), client.ObjectKeyFromObject(job), currentJob); err == nil {
-			if currentJob.Status.Succeeded > 0 {
-				Logf("[DEBUG]", "Cleanup job %s completed successfully", jobName)
-			} else if currentJob.Status.Failed > 0 {
-				Logf("[WARNING]", "Cleanup job %s failed", jobName)
-			}
-		}
-	}()
-
-	return nil
+	Logf("[DEBUG]", "iptables cleanup: exec into %s/%s", targetPod.Namespace, targetPod.Name)
+	return p.streamExec(ctx, targetPod, script)
 }
 
 // getIptablesImage returns the iptables container image to use

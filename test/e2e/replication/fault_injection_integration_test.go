@@ -30,9 +30,10 @@ var _ = Describe("Fault Injection Integration", func() {
 
 		// Exercise iptables fault injection explicitly (same as default when E2E_FAULT_INJECTOR is unset).
 		config := helpers.FaultInjectionConfig{
-			Type:      helpers.FaultInjectorIptables,
-			Client:    k8sClient,
-			Namespace: testNamespace,
+			Type:       helpers.FaultInjectorIptables,
+			Client:     k8sClient,
+			RESTConfig: GetRESTConfig(),
+			Namespace:  testNamespace,
 			ProviderParams: map[string]string{
 				"provisioner": GetTestEnv().Provisioner,
 				"image":       helpers.DefaultIptablesImageWithRegistry,
@@ -86,8 +87,9 @@ var _ = Describe("Fault Injection Integration", func() {
 			os.Setenv("E2E_FAULT_INJECTOR", "none")
 
 			config := helpers.FaultInjectionConfig{
-				Client:    k8sClient,
-				Namespace: testNamespace,
+				Client:     k8sClient,
+				RESTConfig: GetRESTConfig(),
+				Namespace:  testNamespace,
 			}
 
 			noOpProvider, err := helpers.NewFaultInjectionProvider(config)
@@ -224,8 +226,9 @@ var _ = Describe("Fault Injection Integration", func() {
 			}()
 
 			config := helpers.FaultInjectionConfig{
-				Client:    k8sClient,
-				Namespace: testNamespace,
+				Client:     k8sClient,
+				RESTConfig: GetRESTConfig(),
+				Namespace:  testNamespace,
 				ProviderParams: map[string]string{
 					"provisioner": GetTestEnv().Provisioner,
 					"image":       helpers.DefaultIptablesImageWithRegistry,
