@@ -439,18 +439,23 @@ var _ = Describe("PromoteVolumeReplication", func() {
 			})
 
 			By("[DR2] Getting fence CIDRs for peer cluster nodes")
-			cidrs = GetFenceCIDRs(ctx, cDR1, env.Provisioner, "temp-nfc-"+nsName)
+			if helpers.GetFaultInjectorTypeFromEnv() == helpers.FaultInjectorIptables {
+				cidrs = GetFenceCIDRsForFaultInjectionPeer(ctx, cDR2, cDR1)
+			} else {
+				cidrs = GetFenceCIDRs(ctx, cDR1, env.Provisioner, "temp-nfc-"+nsName)
+			}
 			if len(cidrs) == 0 {
-				Skip("L1-PROM-003 could not get CIDRs: set FENCE_CIDRS or ensure cluster has nodes with InternalIP")
+				Skip("L1-PROM-003 could not get CIDRs: set FENCE_CIDRS, or FENCE_PEER_SERVICES/FENCE_TARGET_SERVICES for iptables (peer backends from DR1), or CSI networkFenceClientStatus for NetworkFence")
 			}
 
 			By(fmt.Sprintf("[DR2] Using CIDRs for peer cluster fencing: %v", cidrs))
 
 			By("[DR2] Initializing fault injection provider")
 			faultProvider, err = helpers.NewFaultInjectionProvider(helpers.FaultInjectionConfig{
-				Type:      helpers.GetFaultInjectorTypeFromEnv(),
-				Client:    cDR2,
-				Namespace: nsName,
+				Type:       helpers.GetFaultInjectorTypeFromEnv(),
+				Client:     cDR2,
+				RESTConfig: GetRESTConfigDR2(),
+				Namespace:  nsName,
 				ProviderParams: map[string]string{
 					"provisioner": env.Provisioner,
 					"image":       helpers.DefaultIptablesImageWithRegistry,
@@ -625,9 +630,10 @@ var _ = Describe("PromoteVolumeReplication", func() {
 
 			By("[DR2] Initializing fault injection provider")
 			faultConfig := helpers.FaultInjectionConfig{
-				Type:      helpers.GetFaultInjectorTypeFromEnv(),
-				Client:    cDR2,
-				Namespace: nsName,
+				Type:       helpers.GetFaultInjectorTypeFromEnv(),
+				Client:     cDR2,
+				RESTConfig: GetRESTConfigDR2(),
+				Namespace:  nsName,
 				ProviderParams: map[string]string{
 					"provisioner":     env.Provisioner,
 					"cluster_context": "DR2", // Help identify which cluster this is
@@ -638,9 +644,14 @@ var _ = Describe("PromoteVolumeReplication", func() {
 			Expect(err).NotTo(HaveOccurred(), "Failed to create fault injection provider")
 
 			By("[DR2] Getting fence CIDRs for peer cluster nodes")
-			cidrs := GetFenceCIDRs(ctx, cDR1, env.Provisioner, "temp-nfc-"+nsName)
+			var cidrs []string
+			if helpers.GetFaultInjectorTypeFromEnv() == helpers.FaultInjectorIptables {
+				cidrs = GetFenceCIDRsForFaultInjectionPeer(ctx, cDR2, cDR1)
+			} else {
+				cidrs = GetFenceCIDRs(ctx, cDR1, env.Provisioner, "temp-nfc-"+nsName)
+			}
 			if len(cidrs) == 0 {
-				Skip("L1-PROM-004 could not get CIDRs: set FENCE_CIDRS or ensure cluster has nodes with InternalIP")
+				Skip("L1-PROM-004 could not get CIDRs: set FENCE_CIDRS, or FENCE_PEER_SERVICES/FENCE_TARGET_SERVICES for iptables, or CSI networkFenceClientStatus for NetworkFence")
 			}
 
 			By("[DR2] Fencing peer cluster to block access")

@@ -19,7 +19,9 @@ package replication
 import (
 	"context"
 	"fmt"
+	"net"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -27,6 +29,7 @@ import (
 	"github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -66,6 +69,15 @@ const (
 	networkFenceSecretNsKey   = networkFenceParamPrefix + "networkfence-secret-namespace"
 	networkFencePollTimeout   = 120 * time.Second // for WaitForNetworkFenceResult
 	fenceCIDRProbeTimeout     = 30 * time.Second  // wait for CSIAddonsNode CIDRs before skipping L1-E-003
+	// FENCE_TARGET_SERVICES lists "namespace/service" whose backends resolve for single-cluster iptables discovery
+	// (comma-separated). Example: "rook-ceph/rook-ceph-active-mons"
+	fenceTargetServicesEnv = "FENCE_TARGET_SERVICES"
+	// FENCE_PEER_SERVICES lists "namespace/service" resolved on the **peer** cluster in full-DR iptables tests
+	// (same format as FENCE_TARGET_SERVICES). If unset, FENCE_TARGET_SERVICES is reused for peer lookup keys.
+	fencePeerServicesEnv = "FENCE_PEER_SERVICES"
+	// FENCE_AUTO_ENDPOINT_NAMESPACES limits auto-discovery of Endpoints (comma-separated). Default: rook-ceph,csi-addons-system
+	fenceAutoEndpointNamespacesEnv = "FENCE_AUTO_ENDPOINT_NAMESPACES"
+	fenceAutoDiscoveryMaxCIDRs     = 32
 
 	// NetworkFence/NetworkFenceClass finalizers (must match internal/controller/csiaddons/networkfence*.go)
 	networkFenceFinalizer      = "csiaddons.openshift.io/network-fence"
@@ -864,24 +876,61 @@ func CreateNetworkFenceClass(ctx context.Context, c client.Client, name, provisi
 	return nfc
 }
 
+// GetFenceCIDRsForFaultInjection returns CIDRs for iptables (or other non-CRD) fault injection on a single cluster.
+// Order: 1) FENCE_CIDRS, 2) configured/auto-discovered backends (Endpoints + EndpointSlice), excluding node
+// InternalIPs (no node-IP fallback — set FENCE_CIDRS for single-node labs where all backends are node IPs).
+func GetFenceCIDRsForFaultInjection(ctx context.Context, c client.Client) []string {
+	if cidrs := parseFenceCIDRSFromEnv(); len(cidrs) > 0 {
+		Logf("[DEBUG]", "GetFenceCIDRsForFaultInjection: Using FENCE_CIDRS env: %v", cidrs)
+		return cidrs
+	}
+	Logf("[INFO]", "GetFenceCIDRsForFaultInjection: resolving targets via GetNodeIPsForFencing (Endpoints + EndpointSlice; no node-IP fallback)")
+	return GetNodeIPsForFencing(ctx, c)
+}
+
+// GetFenceCIDRsForFaultInjectionPeer resolves fence targets for full-DR iptables: backends are read from the
+// **peer** cluster (peerClient) while excluding **fencing** cluster (fencingClient) node InternalIPs so the
+// API path on the fencing site is not self-fenced. Order: 1) FENCE_CIDRS, 2) FENCE_PEER_SERVICES or
+// FENCE_TARGET_SERVICES keys looked up on peerClient only.
+func GetFenceCIDRsForFaultInjectionPeer(ctx context.Context, fencingClient, peerClient client.Client) []string {
+	if cidrs := parseFenceCIDRSFromEnv(); len(cidrs) > 0 {
+		Logf("[DEBUG]", "GetFenceCIDRsForFaultInjectionPeer: Using FENCE_CIDRS env: %v", cidrs)
+		return cidrs
+	}
+	fencingNodeIPs := collectNodeInternalIPSet(ctx, fencingClient)
+	keys := parseFencePeerServicesFromEnv()
+	if len(keys) == 0 {
+		Logf("[WARN]", "GetFenceCIDRsForFaultInjectionPeer: set %s or %s (namespace/service list) or FENCE_CIDRS",
+			fencePeerServicesEnv, fenceTargetServicesEnv)
+		return nil
+	}
+	var merged []string
+	for _, key := range keys {
+		ips := collectServiceBackendIPs(ctx, peerClient, key)
+		Logf("[INFO]", "peer fence: %s/%s backend IPs on peer cluster: %v", key.Namespace, key.Name, ips)
+		merged = append(merged, ips...)
+	}
+	out := filterEndpointIPsToCIDRs(merged, fencingNodeIPs)
+	if len(out) > 0 {
+		Logf("[INFO]", "GetFenceCIDRsForFaultInjectionPeer: CIDRs after excluding fencing-cluster node InternalIPs: %v", out)
+		return capFenceCIDRList(out)
+	}
+	if len(merged) > 0 {
+		Logf("[WARN]", "GetFenceCIDRsForFaultInjectionPeer: all peer backend IPs match a fencing-cluster node InternalIP; nothing left to fence")
+	} else {
+		Logf("[WARN]", "GetFenceCIDRsForFaultInjectionPeer: no backend IPs from peer services (check Endpoints/EndpointSlices on peer)")
+	}
+	return nil
+}
+
 // GetFenceCIDRs returns CIDRs to use for NetworkFence. It first checks env FENCE_CIDRS (comma-separated).
 // If unset, it waits up to fenceCIDRProbeTimeout for CSIAddonsNodes (matching provisioner) to have
-// status.networkFenceClientStatus for networkFenceClassName. If still empty, falls back to node InternalIPs
-// (useful when driver does not advertise GET_CLIENTS_TO_FENCE, e.g. CephFS). Returns nil only when all
-// sources fail (caller should skip the test).
+// status.networkFenceClientStatus for networkFenceClassName. If still empty, returns nil (caller should skip
+// or set FENCE_CIDRS; node-IP fallback is disabled to avoid accidental self-fence).
 func GetFenceCIDRs(ctx context.Context, c client.Client, provisioner, networkFenceClassName string) []string {
-	if s := os.Getenv("FENCE_CIDRS"); s != "" {
-		var cidrs []string
-		for _, part := range strings.Split(s, ",") {
-			part = strings.TrimSpace(part)
-			if part != "" {
-				cidrs = append(cidrs, part)
-			}
-		}
-		if len(cidrs) > 0 {
-			Logf("[DEBUG]", "GetFenceCIDRs: Using FENCE_CIDRS env var: %v", cidrs)
-			return cidrs
-		}
+	if cidrs := parseFenceCIDRSFromEnv(); len(cidrs) > 0 {
+		Logf("[DEBUG]", "GetFenceCIDRs: Using FENCE_CIDRS env var: %v", cidrs)
+		return cidrs
 	}
 	Logf("[DEBUG]", "GetFenceCIDRs: FENCE_CIDRS not set, checking CSIAddonsNode for networkFenceClientStatus (provisioner=%s, class=%s)", provisioner, networkFenceClassName)
 	deadline := time.Now().Add(fenceCIDRProbeTimeout)
@@ -921,37 +970,290 @@ func GetFenceCIDRs(ctx context.Context, c client.Client, provisioner, networkFen
 		Logf("[DEBUG]", "GetFenceCIDRs: No CIDRs found yet, retrying in %v...", pollInterval)
 		time.Sleep(pollInterval)
 	}
-	// Fallback: use node InternalIPs when driver does not advertise GET_CLIENTS_TO_FENCE (e.g. CephFS)
-	Logf("[WARN]", "GetFenceCIDRs: Timeout waiting for CSIAddonsNode networkFenceClientStatus, falling back to node InternalIPs")
-	return GetNodeIPsForFencing(ctx, c)
+	Logf("[WARN]", "GetFenceCIDRs: Timeout waiting for CSIAddonsNode networkFenceClientStatus; set FENCE_CIDRS or ensure driver publishes client CIDRs (node-IP fallback disabled)")
+	return nil
 }
 
-// GetNodeIPsForFencing returns node InternalIPs as /32 CIDRs. Used as fallback when
-// FENCE_CIDRS is unset and CSIAddonsNode networkFenceClientStatus is empty.
+// GetNodeIPsForFencing resolves iptables fence CIDRs from service backends and auto-discovered Endpoints:
+// 1) FENCE_TARGET_SERVICES (Endpoints + EndpointSlice); 2) auto-discovered Endpoints in FENCE_AUTO_ENDPOINT_NAMESPACES.
+// Filters out node InternalIPs. Does not fall back to fencing raw node IPs (use FENCE_CIDRS for explicit targets).
 func GetNodeIPsForFencing(ctx context.Context, c client.Client) []string {
-	nodeList := &corev1.NodeList{}
-	if err := c.List(ctx, nodeList); err != nil {
-		Logf("[ERROR]", "GetNodeIPsForFencing: Failed to list nodes: %v", err)
+	nodeIPs := collectNodeInternalIPSet(ctx, c)
+	Logf("[DEBUG]", "GetNodeIPsForFencing: node InternalIPs (excluded from endpoint picks): %v", sortedKeys(nodeIPs))
+
+	if cidrs := fenceCIDRsFromConfiguredTargetServices(ctx, c, nodeIPs); len(cidrs) > 0 {
+		return capFenceCIDRList(cidrs)
+	}
+	if cidrs := fenceCIDRsFromAutoDiscoveredEndpoints(ctx, c, nodeIPs); len(cidrs) > 0 {
+		return capFenceCIDRList(cidrs)
+	}
+
+	Logf("[WARN]", "GetNodeIPsForFencing: no usable backend IPs after excluding node InternalIPs; set %s or FENCE_CIDRS (node-IP fallback disabled)",
+		fenceTargetServicesEnv)
+	return nil
+}
+
+func parseFenceCIDRSFromEnv() []string {
+	s := strings.TrimSpace(os.Getenv("FENCE_CIDRS"))
+	if s == "" {
 		return nil
 	}
 	var cidrs []string
-	Logf("[DEBUG]", "GetNodeIPsForFencing: Found %d nodes, extracting InternalIPs", len(nodeList.Items))
-	for _, node := range nodeList.Items {
+	for _, part := range strings.Split(s, ",") {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			cidrs = append(cidrs, part)
+		}
+	}
+	return cidrs
+}
+
+func collectNodeInternalIPSet(ctx context.Context, c client.Client) map[string]struct{} {
+	out := make(map[string]struct{})
+	nodeList := &corev1.NodeList{}
+	if err := c.List(ctx, nodeList); err != nil {
+		Logf("[DEBUG]", "collectNodeInternalIPSet: list nodes: %v", err)
+		return out
+	}
+	for i := range nodeList.Items {
+		node := &nodeList.Items[i]
 		for _, addr := range node.Status.Addresses {
 			if addr.Type == corev1.NodeInternalIP && addr.Address != "" {
-				cidr := addr.Address + "/32"
-				cidrs = append(cidrs, cidr)
-				Logf("[DEBUG]", "GetNodeIPsForFencing: Added node %s IP: %s", node.Name, cidr)
+				out[addr.Address] = struct{}{}
 				break
 			}
 		}
 	}
-	if len(cidrs) > 0 {
-		Logf("[INFO]", "GetNodeIPsForFencing: Fallback CIDRs from node IPs: %v", cidrs)
-	} else {
-		Logf("[ERROR]", "GetNodeIPsForFencing: No node IPs found")
+	return out
+}
+
+func sortedKeys(m map[string]struct{}) []string {
+	if len(m) == 0 {
+		return nil
 	}
-	return cidrs
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func parseFenceTargetServicesFromEnv() []client.ObjectKey {
+	return parseFenceNamespaceServiceList(os.Getenv(fenceTargetServicesEnv), fenceTargetServicesEnv)
+}
+
+// parseFencePeerServicesFromEnv returns service keys for peer-cluster lookup: FENCE_PEER_SERVICES if set,
+// otherwise the same keys as FENCE_TARGET_SERVICES.
+func parseFencePeerServicesFromEnv() []client.ObjectKey {
+	s := strings.TrimSpace(os.Getenv(fencePeerServicesEnv))
+	if s != "" {
+		return parseFenceNamespaceServiceList(s, fencePeerServicesEnv)
+	}
+	return parseFenceTargetServicesFromEnv()
+}
+
+func parseFenceNamespaceServiceList(raw, envVar string) []client.ObjectKey {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return nil
+	}
+	var keys []client.ObjectKey
+	for _, part := range strings.Split(s, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		ns, name, ok := strings.Cut(part, "/")
+		if !ok {
+			Logf("[WARNING]", "%s: skip %q (want namespace/service)", envVar, part)
+			continue
+		}
+		ns, name = strings.TrimSpace(ns), strings.TrimSpace(name)
+		if ns == "" || name == "" {
+			continue
+		}
+		keys = append(keys, client.ObjectKey{Namespace: ns, Name: name})
+	}
+	return keys
+}
+
+func ipToFenceCIDR(ip string) string {
+	parsed := net.ParseIP(ip)
+	if parsed == nil {
+		return ""
+	}
+	if parsed.To4() == nil {
+		return ip + "/128"
+	}
+	return ip + "/32"
+}
+
+func filterEndpointIPsToCIDRs(ips []string, nodeIPs map[string]struct{}) []string {
+	seen := make(map[string]struct{})
+	var out []string
+	for _, ip := range ips {
+		if _, onNode := nodeIPs[ip]; onNode {
+			Logf("[DEBUG]", "filterEndpointIPs: skip %s (matches node InternalIP — avoids fencing apiserver/kubelet host)", ip)
+			continue
+		}
+		cidr := ipToFenceCIDR(ip)
+		if cidr == "" {
+			continue
+		}
+		if _, ok := seen[cidr]; ok {
+			continue
+		}
+		seen[cidr] = struct{}{}
+		out = append(out, cidr)
+	}
+	return out
+}
+
+func cidrsFromEndpointsObject(ctx context.Context, c client.Client, key client.ObjectKey) []string {
+	ep := &corev1.Endpoints{}
+	if err := c.Get(ctx, key, ep); err != nil {
+		Logf("[DEBUG]", "cidrsFromEndpointsObject: get Endpoints %s: %v", key, err)
+		return nil
+	}
+	var ips []string
+	for _, sub := range ep.Subsets {
+		for _, a := range sub.Addresses {
+			if a.IP != "" {
+				ips = append(ips, a.IP)
+			}
+		}
+	}
+	return ips
+}
+
+// collectServiceBackendIPs merges addresses from v1 Endpoints and EndpointSlices labeled for the Service.
+func collectServiceBackendIPs(ctx context.Context, c client.Client, key client.ObjectKey) []string {
+	seen := make(map[string]struct{})
+	var ips []string
+	add := func(ip string) {
+		if ip == "" {
+			return
+		}
+		if _, ok := seen[ip]; ok {
+			return
+		}
+		seen[ip] = struct{}{}
+		ips = append(ips, ip)
+	}
+	for _, ip := range cidrsFromEndpointsObject(ctx, c, key) {
+		add(ip)
+	}
+	sliceList := &discoveryv1.EndpointSliceList{}
+	listOpts := []client.ListOption{
+		client.InNamespace(key.Namespace),
+		client.MatchingLabels{discoveryv1.LabelServiceName: key.Name},
+	}
+	if err := c.List(ctx, sliceList, listOpts...); err != nil {
+		Logf("[DEBUG]", "collectServiceBackendIPs: list EndpointSlices %s/%s: %v", key.Namespace, key.Name, err)
+		return ips
+	}
+	for i := range sliceList.Items {
+		for j := range sliceList.Items[i].Endpoints {
+			for _, addr := range sliceList.Items[i].Endpoints[j].Addresses {
+				add(addr)
+			}
+		}
+	}
+	return ips
+}
+
+func fenceCIDRsFromConfiguredTargetServices(ctx context.Context, c client.Client, nodeIPs map[string]struct{}) []string {
+	keys := parseFenceTargetServicesFromEnv()
+	if len(keys) == 0 {
+		return nil
+	}
+	var merged []string
+	for _, key := range keys {
+		ips := collectServiceBackendIPs(ctx, c, key)
+		Logf("[INFO]", "%s: service %s/%s backend IPs (Endpoints+EndpointSlice): %v", fenceTargetServicesEnv, key.Namespace, key.Name, ips)
+		merged = append(merged, ips...)
+	}
+	out := filterEndpointIPsToCIDRs(merged, nodeIPs)
+	if len(out) > 0 {
+		Logf("[INFO]", "%s: fence CIDRs after excluding node InternalIPs: %v", fenceTargetServicesEnv, out)
+	} else if len(merged) > 0 {
+		Logf("[WARN]", "%s: all backend IPs matched node InternalIPs; nothing to fence from configured services", fenceTargetServicesEnv)
+	}
+	return out
+}
+
+func autoDiscoverFenceEndpointNamespaces() []string {
+	s := strings.TrimSpace(os.Getenv(fenceAutoEndpointNamespacesEnv))
+	if s == "" {
+		return []string{"rook-ceph", "csi-addons-system"}
+	}
+	var ns []string
+	for _, part := range strings.Split(s, ",") {
+		if t := strings.TrimSpace(part); t != "" {
+			ns = append(ns, t)
+		}
+	}
+	if len(ns) == 0 {
+		return []string{"rook-ceph", "csi-addons-system"}
+	}
+	return ns
+}
+
+func endpointNameLikelyStorageOrCSI(name string) bool {
+	n := strings.ToLower(name)
+	switch {
+	case n == "kubernetes":
+		return false
+	case strings.HasPrefix(n, "rook-ceph"):
+		return true
+	case strings.Contains(n, "csi-addons"):
+		return true
+	}
+	for _, tok := range []string{"mon", "mgr", "ceph", "rbd", "osd", "mds", "nfs", "csi"} {
+		if strings.Contains(n, tok) {
+			return true
+		}
+	}
+	return false
+}
+
+func fenceCIDRsFromAutoDiscoveredEndpoints(ctx context.Context, c client.Client, nodeIPs map[string]struct{}) []string {
+	var allIPs []string
+	for _, ns := range autoDiscoverFenceEndpointNamespaces() {
+		epList := &corev1.EndpointsList{}
+		if err := c.List(ctx, epList, client.InNamespace(ns)); err != nil {
+			Logf("[DEBUG]", "auto-discover Endpoints in namespace %q: %v", ns, err)
+			continue
+		}
+		for i := range epList.Items {
+			ep := &epList.Items[i]
+			if len(ep.Subsets) == 0 || !endpointNameLikelyStorageOrCSI(ep.Name) {
+				continue
+			}
+			for _, sub := range ep.Subsets {
+				for _, a := range sub.Addresses {
+					if a.IP != "" {
+						allIPs = append(allIPs, a.IP)
+					}
+				}
+			}
+		}
+	}
+	out := filterEndpointIPsToCIDRs(allIPs, nodeIPs)
+	if len(out) > 0 {
+		Logf("[INFO]", "GetNodeIPsForFencing: auto-discovered CIDRs from Endpoints (%s=%q): %v",
+			fenceAutoEndpointNamespacesEnv, strings.Join(autoDiscoverFenceEndpointNamespaces(), ","), out)
+	}
+	return out
+}
+
+func capFenceCIDRList(cidrs []string) []string {
+	if len(cidrs) <= fenceAutoDiscoveryMaxCIDRs {
+		return cidrs
+	}
+	Logf("[WARN]", "capping fence CIDR list from %d to %d (set FENCE_CIDRS to be explicit)", len(cidrs), fenceAutoDiscoveryMaxCIDRs)
+	return append([]string(nil), cidrs[:fenceAutoDiscoveryMaxCIDRs]...)
 }
 
 // CreateNetworkFence creates a NetworkFence that blocks (Fenced) or unblocks (Unfenced) the given CIDRs.
