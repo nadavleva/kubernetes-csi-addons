@@ -876,22 +876,22 @@ func CreateNetworkFenceClass(ctx context.Context, c client.Client, name, provisi
 	return nfc
 }
 
-// GetFenceCIDRsForFaultInjection returns CIDRs for iptables (or other non-CRD) fault injection on a single cluster.
-// Order: 1) FENCE_CIDRS, 2) configured/auto-discovered backends (Endpoints + EndpointSlice), excluding node
-// InternalIPs (no node-IP fallback — set FENCE_CIDRS for single-node labs where all backends are node IPs).
+// GetFenceCIDRsForFaultInjection returns CIDRs for the iptables fault injector only (not NetworkFence).
+// Order: 1) FENCE_CIDRS, 2) service/backend IPs (Endpoints + EndpointSlice). Raw cluster node InternalIPs are
+// never used as fence targets (avoids blocking the fencing node); use FENCE_CIDRS if you must target a node IP.
 func GetFenceCIDRsForFaultInjection(ctx context.Context, c client.Client) []string {
 	if cidrs := parseFenceCIDRSFromEnv(); len(cidrs) > 0 {
 		Logf("[DEBUG]", "GetFenceCIDRsForFaultInjection: Using FENCE_CIDRS env: %v", cidrs)
 		return cidrs
 	}
-	Logf("[INFO]", "GetFenceCIDRsForFaultInjection: resolving targets via GetNodeIPsForFencing (Endpoints + EndpointSlice; no node-IP fallback)")
+	Logf("[INFO]", "GetFenceCIDRsForFaultInjection: resolving targets via GetNodeIPsForFencing (iptables: no raw node-IP fence targets)")
 	return GetNodeIPsForFencing(ctx, c)
 }
 
-// GetFenceCIDRsForFaultInjectionPeer resolves fence targets for full-DR iptables: backends are read from the
-// **peer** cluster (peerClient) while excluding **fencing** cluster (fencingClient) node InternalIPs so the
-// API path on the fencing site is not self-fenced. Order: 1) FENCE_CIDRS, 2) FENCE_PEER_SERVICES or
-// FENCE_TARGET_SERVICES keys looked up on peerClient only.
+// GetFenceCIDRsForFaultInjectionPeer resolves fence targets for full-DR iptables only (not NetworkFence).
+// Backends come from the peer cluster; fencing-cluster node InternalIPs are excluded so the API path is not
+// self-fenced. Raw node IPs are never chosen as targets. Order: 1) FENCE_CIDRS, 2) FENCE_PEER_SERVICES or
+// FENCE_TARGET_SERVICES on peerClient.
 func GetFenceCIDRsForFaultInjectionPeer(ctx context.Context, fencingClient, peerClient client.Client) []string {
 	if cidrs := parseFenceCIDRSFromEnv(); len(cidrs) > 0 {
 		Logf("[DEBUG]", "GetFenceCIDRsForFaultInjectionPeer: Using FENCE_CIDRS env: %v", cidrs)
@@ -923,11 +923,23 @@ func GetFenceCIDRsForFaultInjectionPeer(ctx context.Context, fencingClient, peer
 	return nil
 }
 
-// GetFenceCIDRs returns CIDRs to use for NetworkFence. It first checks env FENCE_CIDRS (comma-separated).
-// If unset, it waits up to fenceCIDRProbeTimeout for CSIAddonsNodes (matching provisioner) to have
-// status.networkFenceClientStatus for networkFenceClassName. If still empty, returns nil (caller should skip
-// or set FENCE_CIDRS; node-IP fallback is disabled to avoid accidental self-fence).
+// GetFenceCIDRs returns CIDRs for the NetworkFence fault injector only (iptables uses GetFenceCIDRsForFaultInjection*).
+// Order: 1) FENCE_CIDRS, 2) CSIAddonsNode status.networkFenceClientStatus for networkFenceClassName, 3) node
+// InternalIPs as host routes (CSI did not publish CIDRs in time). Iptables never uses this path and never falls
+// back to raw node IPs as fence targets. For full-DR, if the NetworkFenceClass lives on c but peer nodes are on
+// another cluster, use GetFenceCIDRsWithPeerNodeClient.
 func GetFenceCIDRs(ctx context.Context, c client.Client, provisioner, networkFenceClassName string) []string {
+	return getFenceCIDRs(ctx, c, provisioner, networkFenceClassName, nil)
+}
+
+// GetFenceCIDRsWithPeerNodeClient is like GetFenceCIDRs but, when falling back to node InternalIPs after a CSI
+// timeout, uses peerNodeClient for node discovery instead of c. Pass the peer cluster client when c is the
+// cluster where you list CSIAddonsNode / create NetworkFenceClass but the fenced peer is the other cluster.
+func GetFenceCIDRsWithPeerNodeClient(ctx context.Context, c, peerNodeClient client.Client, provisioner, networkFenceClassName string) []string {
+	return getFenceCIDRs(ctx, c, provisioner, networkFenceClassName, peerNodeClient)
+}
+
+func getFenceCIDRs(ctx context.Context, c client.Client, provisioner, networkFenceClassName string, peerNodeClient client.Client) []string {
 	if cidrs := parseFenceCIDRSFromEnv(); len(cidrs) > 0 {
 		Logf("[DEBUG]", "GetFenceCIDRs: Using FENCE_CIDRS env var: %v", cidrs)
 		return cidrs
@@ -970,13 +982,49 @@ func GetFenceCIDRs(ctx context.Context, c client.Client, provisioner, networkFen
 		Logf("[DEBUG]", "GetFenceCIDRs: No CIDRs found yet, retrying in %v...", pollInterval)
 		time.Sleep(pollInterval)
 	}
-	Logf("[WARN]", "GetFenceCIDRs: Timeout waiting for CSIAddonsNode networkFenceClientStatus; set FENCE_CIDRS or ensure driver publishes client CIDRs (node-IP fallback disabled)")
-	return nil
+	Logf("[WARN]", "GetFenceCIDRs: Timeout waiting for CSIAddonsNode networkFenceClientStatus for class %q", networkFenceClassName)
+	nodeClient := c
+	if peerNodeClient != nil {
+		nodeClient = peerNodeClient
+		Logf("[INFO]", "GetFenceCIDRs: Using peer cluster client for node-IP fallback (not the CSI list client)")
+	}
+	fallback := collectAllNodeInternalIPCIDRs(ctx, nodeClient)
+	if len(fallback) == 0 {
+		Logf("[WARN]", "GetFenceCIDRs: Node InternalIP fallback found no nodes; set FENCE_CIDRS explicitly")
+		return nil
+	}
+	Logf("[WARN]", "GetFenceCIDRs: Using node InternalIP fallback CIDRs (driver did not publish client CIDRs in time): %v", fallback)
+	return capFenceCIDRList(fallback)
+}
+
+// collectAllNodeInternalIPCIDRs returns each node's primary InternalIP as a host route (IPv4 /32, IPv6 /128), sorted.
+func collectAllNodeInternalIPCIDRs(ctx context.Context, c client.Client) []string {
+	set := collectNodeInternalIPSet(ctx, c)
+	if len(set) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(set))
+	for ipStr := range set {
+		if ipStr == "" {
+			continue
+		}
+		parsed := net.ParseIP(ipStr)
+		if parsed == nil {
+			continue
+		}
+		if parsed.To4() != nil {
+			out = append(out, fmt.Sprintf("%s/32", ipStr))
+		} else {
+			out = append(out, fmt.Sprintf("%s/128", ipStr))
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // GetNodeIPsForFencing resolves iptables fence CIDRs from service backends and auto-discovered Endpoints:
 // 1) FENCE_TARGET_SERVICES (Endpoints + EndpointSlice); 2) auto-discovered Endpoints in FENCE_AUTO_ENDPOINT_NAMESPACES.
-// Filters out node InternalIPs. Does not fall back to fencing raw node IPs (use FENCE_CIDRS for explicit targets).
+// Node InternalIPs are excluded from picks; raw node IPs are never used as iptables fence targets (use FENCE_CIDRS to target a node explicitly).
 func GetNodeIPsForFencing(ctx context.Context, c client.Client) []string {
 	nodeIPs := collectNodeInternalIPSet(ctx, c)
 	Logf("[DEBUG]", "GetNodeIPsForFencing: node InternalIPs (excluded from endpoint picks): %v", sortedKeys(nodeIPs))
@@ -988,7 +1036,7 @@ func GetNodeIPsForFencing(ctx context.Context, c client.Client) []string {
 		return capFenceCIDRList(cidrs)
 	}
 
-	Logf("[WARN]", "GetNodeIPsForFencing: no usable backend IPs after excluding node InternalIPs; set %s or FENCE_CIDRS (node-IP fallback disabled)",
+	Logf("[WARN]", "GetNodeIPsForFencing: no usable backend IPs after excluding node InternalIPs; set %s or FENCE_CIDRS (iptables does not use raw node IPs as targets)",
 		fenceTargetServicesEnv)
 	return nil
 }
