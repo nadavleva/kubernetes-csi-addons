@@ -97,16 +97,19 @@ const (
 	EventReasonIptablesFenceCleanup  = "IptablesFenceTeardownCleanup"
 )
 
-// csiAddonsStagedRejectCleanupShell removes OUTPUT rules inserted by FenceIP (--reject-with icmp-host-unreachable).
+// csiAddonsStagedRejectCleanupShell removes OUTPUT and FORWARD rules inserted by FenceIP (--reject-with icmp-host-unreachable).
+// FORWARD is required so pod-originated traffic (CNI) to the peer is dropped; OUTPUT alone only affects host netns.
 // It intentionally does not remove other host firewall REJECT rules.
 const csiAddonsStagedRejectCleanupShell = `
-			echo "[$(date)] CSI-Addons: removing staged OUTPUT REJECT rules (icmp-host-unreachable only)"
+			echo "[$(date)] CSI-Addons: removing staged OUTPUT/FORWARD REJECT rules (icmp-host-unreachable only)"
 			for ipt_cmd in iptables-legacy iptables-nft iptables; do
 				if command -v $ipt_cmd >/dev/null 2>&1; then
 					echo "[$(date)] Using $ipt_cmd for staged fence cleanup"
-					$ipt_cmd -S OUTPUT | grep 'icmp-host-unreachable' | sed 's/^-A/-D/' | while read rule; do
-						echo "[$(date)] Removing rule: $rule"
-						$ipt_cmd $rule 2>/dev/null || true
+					for chain in OUTPUT FORWARD; do
+						$ipt_cmd -S "$chain" | grep 'icmp-host-unreachable' | sed 's/^-A/-D/' | while read rule; do
+							echo "[$(date)] Removing rule: $rule"
+							$ipt_cmd $rule 2>/dev/null || true
+						done
 					done
 					break
 				fi
@@ -171,7 +174,7 @@ func (p *IptablesFaultProvider) FenceIP(ctx context.Context, targetCIDR string, 
 
 	// Record event + ConfigMap *before* iptables runs: fencing the API/control-plane node breaks subsequent API calls.
 	p.emitIptablesFenceEvent(ctx, EventReasonIptablesFenceStarting, fmt.Sprintf(
-		"About to apply OUTPUT REJECT to %s (workload namespace %q). If this CIDR is the apiserver or node network, API access may fail until unfence.",
+		"About to apply OUTPUT+FORWARD REJECT to %s (workload namespace %q). If this CIDR is the apiserver or node network, API access may fail until unfence.",
 		targetCIDR, p.config.Namespace))
 	if err := p.syncFenceStateConfigMapPreApply(ctx, targetCIDR); err != nil {
 		Logf("[WARNING]", "sync pre-apply fence state ConfigMap: %v", err)
@@ -192,7 +195,7 @@ func (p *IptablesFaultProvider) FenceIP(ctx context.Context, targetCIDR string, 
 		Logf("[WARNING]", "post-fence sync fence state ConfigMap (may fail if API path is blocked): %v", err)
 	}
 	p.emitIptablesFenceEvent(ctx, EventReasonIptablesFenceApplied, fmt.Sprintf(
-		"Applied OUTPUT REJECT to %s (workload namespace %q). State: kubectl -n %s get configmap %s -o yaml",
+		"Applied OUTPUT+FORWARD REJECT to %s (workload namespace %q). State: kubectl -n %s get configmap %s -o yaml",
 		targetCIDR, p.config.Namespace, p.dsNamespace, IptablesFenceStateConfigMapName))
 
 	Logf("[INFO]", "[%s] Successfully fenced %s using iptables (tracked CIDRs: %v; ConfigMap %s/%s)",
@@ -224,7 +227,7 @@ func (p *IptablesFaultProvider) UnfenceIP(ctx context.Context, targetCIDR string
 	p.removeFromActiveRules(targetCIDR)
 
 	p.emitIptablesFenceEvent(ctx, EventReasonIptablesFenceRemoved, fmt.Sprintf(
-		"Removed OUTPUT REJECT for %s (workload namespace %q)", targetCIDR, p.config.Namespace))
+		"Removed OUTPUT+FORWARD REJECT for %s (workload namespace %q)", targetCIDR, p.config.Namespace))
 	if err := p.syncFenceStateConfigMap(ctx); err != nil {
 		Logf("[WARNING]", "sync fence state ConfigMap after unfence: %v", err)
 	}
@@ -245,7 +248,7 @@ const (
 	connectivityProbeTimeout = 120 * time.Second
 )
 
-// EstablishConnectivityBaseline runs iptables-only Jobs (ping / ip route / traceroute) before OUTPUT REJECT.
+// EstablishConnectivityBaseline runs iptables-only Jobs (ping / ip route / traceroute) before applying fence rules.
 // NetworkFence paths use VolumeReplication status instead; they do not call this.
 func (p *IptablesFaultProvider) EstablishConnectivityBaseline(ctx context.Context, targetCIDR string) (*ConnectivityBaseline, error) {
 	clusterContext := p.getClusterContext()
@@ -460,7 +463,7 @@ func (p *IptablesFaultProvider) GetProviderType() FaultInjectorType {
 // getClusterContext tries to determine which cluster context we're operating in
 // by examining the client configuration or namespace patterns
 func (p *IptablesFaultProvider) getClusterContext() string {
-	// Check provider params first
+	// Check provider params first (tests should set this in full-DR so logs match the client cluster).
 	if p.config.ProviderParams != nil {
 		if clusterContext, exists := p.config.ProviderParams["cluster_context"]; exists {
 			return clusterContext
@@ -478,10 +481,11 @@ func (p *IptablesFaultProvider) getClusterContext() string {
 	if kubeContext := os.Getenv("KUBE_CONTEXT"); kubeContext != "" {
 		return fmt.Sprintf("context:%s", kubeContext)
 	}
-	if dr1Context := os.Getenv("DR1_CONTEXT"); dr1Context != "" {
+	// Avoid preferring DR1 when both DR*_CONTEXT are set (ambiguous for full-DR).
+	if dr1 := os.Getenv("DR1_CONTEXT"); dr1 != "" && os.Getenv("DR2_CONTEXT") == "" {
 		return "DR1"
 	}
-	if dr2Context := os.Getenv("DR2_CONTEXT"); dr2Context != "" {
+	if dr2 := os.Getenv("DR2_CONTEXT"); dr2 != "" && os.Getenv("DR1_CONTEXT") == "" {
 		return "DR2"
 	}
 	// Fallback to namespace info
@@ -1119,17 +1123,20 @@ func (p *IptablesFaultProvider) executeIptablesCommand(ctx context.Context, targ
 
 	if action == "fence" {
 		command = baseCommand + fmt.Sprintf(`
-			echo "[$(date)] Fencing %s"
+			echo "[$(date)] Fencing %s (OUTPUT+FORWARD: pod traffic uses FORWARD; host uses OUTPUT)"
 			$IPT_CMD -C OUTPUT -d %s -j REJECT --reject-with icmp-host-unreachable 2>/dev/null || \
 			$IPT_CMD -I OUTPUT -d %s -j REJECT --reject-with icmp-host-unreachable
+			$IPT_CMD -C FORWARD -d %s -j REJECT --reject-with icmp-host-unreachable 2>/dev/null || \
+			$IPT_CMD -I FORWARD -d %s -j REJECT --reject-with icmp-host-unreachable
 			echo "[$(date)] Fenced: %s"
-		`, targetCIDR, targetCIDR, targetCIDR, targetCIDR)
+		`, targetCIDR, targetCIDR, targetCIDR, targetCIDR, targetCIDR, targetCIDR)
 	} else if action == "unfence" {
 		command = baseCommand + fmt.Sprintf(`
 			echo "[$(date)] Unfencing %s"
 			$IPT_CMD -D OUTPUT -d %s -j REJECT --reject-with icmp-host-unreachable 2>/dev/null || true
+			$IPT_CMD -D FORWARD -d %s -j REJECT --reject-with icmp-host-unreachable 2>/dev/null || true
 			echo "[$(date)] Unfenced: %s"
-		`, targetCIDR, targetCIDR, targetCIDR)
+		`, targetCIDR, targetCIDR, targetCIDR, targetCIDR)
 	} else {
 		return fmt.Errorf("invalid action: %s", action)
 	}
