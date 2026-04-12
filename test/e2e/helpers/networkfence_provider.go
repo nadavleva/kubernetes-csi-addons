@@ -242,7 +242,18 @@ func (p *NetworkFenceFaultProvider) UnfenceIP(ctx context.Context, targetCIDR st
 	return nil
 }
 
-func (p *NetworkFenceFaultProvider) VerifyConnectivity(ctx context.Context, targetCIDR string, expectedFenced bool) (bool, error) {
+// EstablishConnectivityBaseline is a no-op for NetworkFence: fencing is enforced in the storage
+// layer; reachability for replication is observed on VolumeReplication and related CRs, not via Jobs.
+func (p *NetworkFenceFaultProvider) EstablishConnectivityBaseline(ctx context.Context, targetCIDR string) (*ConnectivityBaseline, error) {
+	_ = ctx
+	_ = targetCIDR
+	return nil, nil
+}
+
+// VerifyConnectivity compares expected fence state to the NetworkFence CR (and tracked resources).
+// baseline is ignored—packet-level connectivity tests apply only to the iptables injector.
+func (p *NetworkFenceFaultProvider) VerifyConnectivity(ctx context.Context, targetCIDR string, expectedFenced bool, baseline *ConnectivityBaseline) (bool, error) {
+	_ = baseline
 	if !p.IsSupported(ctx) {
 		Logf("[ERROR]", "Cannot verify connectivity for IP %s: NetworkFence not supported", targetCIDR)
 		return false, fmt.Errorf("NetworkFence not supported")

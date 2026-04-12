@@ -237,89 +237,163 @@ func (p *IptablesFaultProvider) UnfenceIP(ctx context.Context, targetCIDR string
 	return nil
 }
 
-func (p *IptablesFaultProvider) VerifyConnectivity(ctx context.Context, targetCIDR string, expectedFenced bool) (bool, error) {
-	clusterContext := p.getClusterContext()
-	Logf("[DEBUG]", "[%s] Starting connectivity verification for CIDR %s (expected fenced: %t) using DaemonSet %s", clusterContext, targetCIDR, expectedFenced, IptablesDaemonSetName)
+// connectivityProbePollInterval and connectivityProbeTimeout bound how long we wait for the probe Job
+// (ping / ip route / traceroute when available in the pre-built image — no runtime package installs).
+const (
+	connectivityProbePollInterval = 2 * time.Second
+	// Allow slow image pull / scheduling (probe uses same pre-built image as the DaemonSet).
+	connectivityProbeTimeout = 120 * time.Second
+)
 
-	// Initial reachability check does not require the iptables DaemonSet; only fenced-state checks need rules in place.
+// EstablishConnectivityBaseline runs iptables-only Jobs (ping / ip route / traceroute) before OUTPUT REJECT.
+// NetworkFence paths use VolumeReplication status instead; they do not call this.
+func (p *IptablesFaultProvider) EstablishConnectivityBaseline(ctx context.Context, targetCIDR string) (*ConnectivityBaseline, error) {
+	clusterContext := p.getClusterContext()
+	targetIP := strings.Split(targetCIDR, "/")[0]
+	Logf("[DEBUG]", "[%s] EstablishConnectivityBaseline for %s (IP %s)", clusterContext, targetCIDR, targetIP)
+
+	b, err := p.runConnectivityProbeJob(ctx, targetIP, false)
+	if err != nil {
+		return nil, err
+	}
+	Logf("[INFO]", "[%s] Connectivity baseline for %s: %s", clusterContext, targetCIDR, b.String())
+	if !b.AnyProbeSucceeded() {
+		return b, fmt.Errorf("connectivity baseline: no probe succeeded for %s (ICMP may be blocked; no route/traceroute) — cannot verify fencing", targetCIDR)
+	}
+	return b, nil
+}
+
+func (p *IptablesFaultProvider) VerifyConnectivity(ctx context.Context, targetCIDR string, expectedFenced bool, baseline *ConnectivityBaseline) (bool, error) {
+	clusterContext := p.getClusterContext()
+	Logf("[DEBUG]", "[%s] VerifyConnectivity for %s (expected fenced: %t, has baseline: %t)", clusterContext, targetCIDR, expectedFenced, baseline != nil)
+
 	if !p.deployed && expectedFenced {
 		Logf("[ERROR]", "[%s] Cannot verify fenced connectivity for %s: iptables DaemonSet %s not ready", clusterContext, targetCIDR, IptablesDaemonSetName)
 		return false, fmt.Errorf("[%s] iptables DaemonSet %s not deployed", clusterContext, IptablesDaemonSetName)
 	}
 
-	// Extract IP from CIDR if needed
 	targetIP := strings.Split(targetCIDR, "/")[0]
-	Logf("[DEBUG]", "[%s] Extracted target IP %s from CIDR %s for ping test", clusterContext, targetIP, targetCIDR)
-
-	pingSucceeded, err := p.runPingJob(ctx, targetIP)
+	cur, err := p.runConnectivityProbeJob(ctx, targetIP, expectedFenced)
 	if err != nil {
 		return false, err
 	}
 
-	// Check if the result matches expectations
-	if expectedFenced {
-		result := !pingSucceeded
-		Logf("[INFO]", "[%s] VerifyConnectivity %s: expected fenced=%t, ping ok=%t, match=%t", clusterContext, targetCIDR, expectedFenced, pingSucceeded, result)
-		return result, nil
+	if baseline != nil {
+		match := CompareProbeResultsToBaseline(baseline, cur, expectedFenced)
+		Logf("[INFO]", "[%s] VerifyConnectivity %s vs baseline: expected fenced=%t, match=%t (now: %s)", clusterContext, targetCIDR, expectedFenced, match, cur.String())
+		return match, nil
 	}
-	Logf("[INFO]", "[%s] VerifyConnectivity %s: expected reachable=%t, ping ok=%t, match=%t", clusterContext, targetCIDR, !expectedFenced, pingSucceeded, pingSucceeded)
-	return pingSucceeded, nil
+
+	// No baseline: "reachable" if any probe succeeds (handles ICMP blocked on some paths).
+	anyOK := cur.PingOK || cur.IPRouteOK || cur.TracerouteOK
+	if expectedFenced {
+		match := !anyOK
+		Logf("[INFO]", "[%s] VerifyConnectivity %s (no baseline): expected fenced=%t, any probe ok=%t, match=%t", clusterContext, targetCIDR, expectedFenced, anyOK, match)
+		return match, nil
+	}
+	Logf("[INFO]", "[%s] VerifyConnectivity %s (no baseline): expected reachable, any probe ok=%t", clusterContext, targetCIDR, anyOK)
+	return anyOK, nil
 }
 
-// runPingJob creates a ping Job in the workload namespace and returns whether ping succeeded.
-func (p *IptablesFaultProvider) runPingJob(ctx context.Context, targetIP string) (bool, error) {
-	pingJob := p.createPingJob(targetIP)
-	if err := p.config.Client.Create(ctx, pingJob); err != nil {
-		Logf("[ERROR]", "Failed to create ping job for connectivity verification of IP %s: %v", targetIP, err)
-		return false, fmt.Errorf("failed to create ping job: %w", err)
+// runConnectivityProbeJob runs ping, ip route get, and traceroute (pre-installed in image) in a short-lived Job; parses CSI_BASELINE from logs.
+// expectedFenced only affects log level on watch timeout (job infra vs path loss).
+func (p *IptablesFaultProvider) runConnectivityProbeJob(ctx context.Context, targetIP string, expectedFenced bool) (*ConnectivityBaseline, error) {
+	job := p.createConnectivityProbeJob(targetIP)
+	if err := p.config.Client.Create(ctx, job); err != nil {
+		Logf("[ERROR]", "Failed to create connectivity probe job for IP %s: %v", targetIP, err)
+		return nil, fmt.Errorf("failed to create connectivity probe job: %w", err)
 	}
+	jobKey := client.ObjectKeyFromObject(job)
 
 	defer func() {
-		if err := p.config.Client.Delete(ctx, pingJob); err != nil {
-			Logf("[WARNING]", "Failed to delete ping job: %v", err)
+		del := &batchv1.Job{}
+		if err := p.config.Client.Get(ctx, jobKey, del); err == nil {
+			_ = p.config.Client.Delete(ctx, del)
 		}
 	}()
 
-	timeout := 60 * time.Second
-	checkInterval := 5 * time.Second
-
-	var jobCompleted bool
-	var pingSucceeded bool
-
-	err := wait.PollImmediate(checkInterval, timeout, func() (bool, error) {
-		var job batchv1.Job
-		key := client.ObjectKeyFromObject(pingJob)
-		if err := p.config.Client.Get(ctx, key, &job); err != nil {
-			Logf("[DEBUG]", "Failed to get ping job status during connectivity verification: %v", err)
-			return false, fmt.Errorf("failed to get ping job: %w", err)
+	err := wait.PollImmediate(connectivityProbePollInterval, connectivityProbeTimeout, func() (bool, error) {
+		var j batchv1.Job
+		if err := p.config.Client.Get(ctx, jobKey, &j); err != nil {
+			return false, fmt.Errorf("get probe job: %w", err)
 		}
-
-		if job.Status.Succeeded > 0 {
-			pingSucceeded = true
-			jobCompleted = true
+		if j.Status.Succeeded > 0 || j.Status.Failed > 0 {
 			return true, nil
 		}
-
-		if job.Status.Failed > 0 {
-			pingSucceeded = false
-			jobCompleted = true
-			return true, nil
-		}
-
 		return false, nil
 	})
 
 	if err != nil {
-		Logf("[ERROR]", "Failed to verify connectivity to %s: %v", targetIP, err)
-		return false, fmt.Errorf("failed to verify connectivity to %s: %w", targetIP, err)
+		var j batchv1.Job
+		lateOK := p.config.Client.Get(ctx, jobKey, &j) == nil && (j.Status.Succeeded > 0 || j.Status.Failed > 0)
+		if !lateOK {
+			if wait.Interrupted(err) {
+				if expectedFenced {
+					Logf("[INFO]", "Connectivity probe job for %s did not finish within %v (expected fenced check); often image pull/scheduling — not ICMP proof",
+						targetIP, connectivityProbeTimeout)
+				} else {
+					Logf("[ERROR]", "Connectivity probe job for %s: %v", targetIP, err)
+				}
+			}
+			return nil, fmt.Errorf("connectivity probe job timeout for %s: %w", targetIP, err)
+		}
 	}
 
-	if !jobCompleted {
-		Logf("[ERROR]", "Ping job to %s did not complete within timeout", targetIP)
-		return false, fmt.Errorf("ping job to %s did not complete within timeout", targetIP)
+	logs, logErr := p.fetchProbeJobLogs(ctx, job.Namespace, job.Name)
+	if logErr != nil {
+		return nil, logErr
 	}
+	b, parseErr := ParseConnectivityBaselineFromLog(targetIP, logs)
+	if parseErr != nil {
+		Logf("[WARNING]", "probe log parse: %v; raw: %q", parseErr, truncateRunes(logs, 512))
+		return nil, parseErr
+	}
+	return b, nil
+}
 
-	return pingSucceeded, nil
+func truncateRunes(s string, max int) string {
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	return string(r[:max]) + "..."
+}
+
+func (p *IptablesFaultProvider) fetchProbeJobLogs(ctx context.Context, namespace, jobName string) (string, error) {
+	if p.config.RESTConfig == nil {
+		return "", fmt.Errorf("RESTConfig is required to read probe job logs")
+	}
+	cs, err := kubernetes.NewForConfig(p.config.RESTConfig)
+	if err != nil {
+		return "", fmt.Errorf("kubernetes clientset: %w", err)
+	}
+	podList := &corev1.PodList{}
+	var listErr error
+	for _, lbl := range []map[string]string{
+		{"job-name": jobName},
+		{"batch.kubernetes.io/job-name": jobName},
+	} {
+		podList = &corev1.PodList{}
+		listErr = p.config.Client.List(ctx, podList, client.InNamespace(namespace), client.MatchingLabels(lbl))
+		if listErr != nil {
+			break
+		}
+		if len(podList.Items) > 0 {
+			break
+		}
+	}
+	if listErr != nil {
+		return "", fmt.Errorf("list job pods: %w", listErr)
+	}
+	if len(podList.Items) == 0 {
+		return "", fmt.Errorf("no pods for job %s", jobName)
+	}
+	podName := podList.Items[0].Name
+	raw, err := cs.CoreV1().Pods(namespace).GetLogs(podName, &corev1.PodLogOptions{}).Do(ctx).Raw()
+	if err != nil {
+		return "", fmt.Errorf("get pod logs %s: %w", podName, err)
+	}
+	return string(raw), nil
 }
 
 func (p *IptablesFaultProvider) Cleanup(ctx context.Context) error {
@@ -734,23 +808,37 @@ func (p *IptablesFaultProvider) deployDaemonSet(ctx context.Context) error {
 	return nil
 }
 
+// getIptablesImage returns the image for the iptables DaemonSet and connectivity probe Jobs.
+// Tools must be present in the image (build Containerfile.iptables); pods must not run apk/apt at runtime.
+// Order: ProviderParams["image"], E2E_IPTABLES_IMAGE, DefaultIptablesImage.
+func (p *IptablesFaultProvider) getIptablesImage() string {
+	if p.config.ProviderParams != nil {
+		if image := strings.TrimSpace(p.config.ProviderParams["image"]); image != "" {
+			return normalizeIptablesImageRef(image)
+		}
+	}
+	image := strings.TrimSpace(os.Getenv(EnvIptablesImage))
+	if image == "" {
+		image = DefaultIptablesImage
+	}
+	return normalizeIptablesImageRef(image)
+}
+
+func normalizeIptablesImageRef(image string) string {
+	if strings.HasPrefix(image, "localhost/") {
+		out := strings.TrimPrefix(image, "localhost/")
+		Logf("[DEBUG]", "Normalized image name by removing localhost/ prefix: %s", out)
+		return out
+	}
+	return image
+}
+
 // createIptablesDaemonSet creates the DaemonSet manifest for iptables operations using templates
 func (p *IptablesFaultProvider) createIptablesDaemonSet() *appsv1.DaemonSet {
 	if p.dsNamespace == "" {
 		p.dsNamespace = p.config.Namespace
 	}
-	// Get configuration from environment or use defaults
-	image := os.Getenv(EnvIptablesImage)
-	if image == "" {
-		image = DefaultIptablesImage
-	}
-
-	// Normalize image name - remove localhost/ prefix if present (podman may add it)
-	if strings.HasPrefix(image, "localhost/") {
-		image = strings.TrimPrefix(image, "localhost/")
-		Logf("[DEBUG]", "Normalized image name by removing localhost/ prefix: %s", image)
-	}
-
+	image := p.getIptablesImage()
 	Logf("[DEBUG]", "Creating iptables DaemonSet with image: %s", image)
 
 	nodeSelector := map[string]string{}
@@ -770,16 +858,7 @@ func (p *IptablesFaultProvider) createIptablesDaemonSet() *appsv1.DaemonSet {
 		NodeSelector: nodeSelector,
 	}
 
-	// Use different template based on image type
-	templatePath := "templates/iptables-daemonset.yaml"
-	if strings.Contains(image, "alpine:") && !strings.Contains(image, "iptables-manager") {
-		Logf("[DEBUG]", "Using alpine image - will install iptables at runtime")
-		// For alpine images, we need to use the old template with runtime installation
-		// But we'll modify it inline
-	} else {
-		Logf("[DEBUG]", "Using pre-built iptables image - no runtime installation needed")
-	}
-
+	const templatePath = "templates/iptables-daemonset.yaml"
 	daemonSet := &appsv1.DaemonSet{}
 	Logf("[DEBUG]", "About to render DaemonSet template: %s", templatePath)
 	if err := p.renderTemplate(templatePath, data, daemonSet); err != nil {
@@ -792,36 +871,6 @@ func (p *IptablesFaultProvider) createIptablesDaemonSet() *appsv1.DaemonSet {
 	Logf("[DEBUG]", "DaemonSet volumes count: %d", len(daemonSet.Spec.Template.Spec.Volumes))
 	for i, vol := range daemonSet.Spec.Template.Spec.Volumes {
 		Logf("[DEBUG]", "Volume %d: %s", i, vol.Name)
-	}
-
-	// If using alpine image, modify the command to install iptables
-	if strings.Contains(image, "alpine:") && !strings.Contains(image, "iptables-manager") {
-		Logf("[DEBUG]", "Modifying DaemonSet command for alpine image with runtime installation")
-		container := &daemonSet.Spec.Template.Spec.Containers[0]
-		container.Command = []string{"sh", "-c"}
-		container.Args = []string{
-			`echo 'Installing iptables and dependencies...';
-apk add --no-cache iptables inotify-tools &&
-echo 'Installation completed, iptables available at:'; which iptables &&
-echo 'Creating readiness marker...';
-touch /tmp/iptables-ready &&
-echo 'Starting iptables rules monitoring loop...';
-while true; do
-  if [ -f /rules/apply.sh ]; then
-    echo '[$(date)] Executing /rules/apply.sh';
-    chmod +x /rules/apply.sh && /rules/apply.sh 2>&1 | tee -a /var/log/iptables.log;
-  else
-    echo '[$(date)] No rules file found, waiting...';
-  fi;
-  sleep 10;
-done`,
-		}
-
-		// Adjust probes for slower alpine installation
-		container.StartupProbe.InitialDelaySeconds = 5
-		container.StartupProbe.PeriodSeconds = 2
-		container.StartupProbe.FailureThreshold = 30 // Allow 60 seconds for installation
-		container.ReadinessProbe.InitialDelaySeconds = 10
 	}
 
 	return daemonSet
@@ -1107,26 +1156,42 @@ func (p *IptablesFaultProvider) executeIptablesCommand(ctx context.Context, targ
 	return nil
 }
 
-// createPingJob creates a Kubernetes Job that pings the target IP to test connectivity
-func (p *IptablesFaultProvider) createPingJob(targetIP string) *batchv1.Job {
-	jobName := fmt.Sprintf("ping-test-%s-%d", strings.ReplaceAll(targetIP, ".", "-"), time.Now().UnixNano())
+// createConnectivityProbeJob runs ping, ip route get, and traceroute (if present in image). Prints CSI_BASELINE.
+// Uses the same pre-built iptables-manager image as the DaemonSet — no apk/apt on the pod.
+func (p *IptablesFaultProvider) createConnectivityProbeJob(targetIP string) *batchv1.Job {
+	jobName := fmt.Sprintf("conn-probe-%s-%d", strings.ReplaceAll(targetIP, ".", "-"), time.Now().UnixNano())
+	probeImage := p.getIptablesImage()
+
+	script := fmt.Sprintf(`set +e
+T=%q
+P=0 R=0 X=0
+ping -c 1 -W 2 "$T" >/dev/null 2>&1 && P=1
+if ip route get "$T" >/dev/null 2>&1; then R=1; fi
+if command -v traceroute >/dev/null 2>&1; then
+  if traceroute -n -m 5 -w 1 -q 1 "$T" 2>/dev/null | head -12 | grep -qE '^[[:space:]]*[0-9]+'; then X=1; fi
+fi
+echo "CSI_BASELINE ping=${P} ip_route=${R} traceroute=${X}"
+exit 0
+`, targetIP)
 
 	return &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      jobName,
 			Namespace: p.config.Namespace,
 			Labels: map[string]string{
-				"app":                          "ping-test",
+				"app":                          "conn-probe",
 				"csi-addons.io/component":      "connectivity-test",
 				"csi-addons.io/fault-injector": "iptables",
 			},
 		},
 		Spec: batchv1.JobSpec{
-			BackoffLimit: &[]int32{2}[0],
+			BackoffLimit:            func() *int32 { v := int32(1); return &v }(),
+			ActiveDeadlineSeconds:   func() *int64 { v := int64(180); return &v }(),
+			TTLSecondsAfterFinished: func() *int32 { v := int32(120); return &v }(),
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels: map[string]string{
-						"app":                          "ping-test",
+						"app":                          "conn-probe",
 						"csi-addons.io/component":      "connectivity-test",
 						"csi-addons.io/fault-injector": "iptables",
 					},
@@ -1135,20 +1200,18 @@ func (p *IptablesFaultProvider) createPingJob(targetIP string) *batchv1.Job {
 					RestartPolicy: corev1.RestartPolicyNever,
 					Containers: []corev1.Container{
 						{
-							Name:  "ping",
-							Image: "alpine:latest",
-							Command: []string{
-								"sh", "-c",
-								fmt.Sprintf("ping -c 3 -W 5 %s", targetIP),
-							},
+							Name:            "probe",
+							Image:           probeImage,
+							ImagePullPolicy: corev1.PullNever,
+							Command:         []string{"sh", "-c", script},
 							Resources: corev1.ResourceRequirements{
 								Requests: corev1.ResourceList{
 									corev1.ResourceCPU:    resource.MustParse("10m"),
-									corev1.ResourceMemory: resource.MustParse("16Mi"),
+									corev1.ResourceMemory: resource.MustParse("32Mi"),
 								},
 								Limits: corev1.ResourceList{
-									corev1.ResourceCPU:    resource.MustParse("100m"),
-									corev1.ResourceMemory: resource.MustParse("64Mi"),
+									corev1.ResourceCPU:    resource.MustParse("200m"),
+									corev1.ResourceMemory: resource.MustParse("128Mi"),
 								},
 							},
 						},
@@ -1363,12 +1426,4 @@ func (p *IptablesFaultProvider) createCleanupJob(ctx context.Context, targetPod 
 	}
 	Logf("[DEBUG]", "iptables cleanup: exec into %s/%s", targetPod.Namespace, targetPod.Name)
 	return p.streamExec(ctx, targetPod, script)
-}
-
-// getIptablesImage returns the iptables container image to use
-func (p *IptablesFaultProvider) getIptablesImage() string {
-	if image := p.config.ProviderParams["image"]; image != "" {
-		return image
-	}
-	return DefaultIptablesImageWithRegistry
 }
