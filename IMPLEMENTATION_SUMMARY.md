@@ -34,12 +34,11 @@
    - Backward compatibility placeholder for existing tests
    - Ready for integration with existing NetworkFence helper functions
 
-### Phase 4: Integration and Testing  
-6. **Integration tests** - Created [test/e2e/replication/fault_injection_test.go](test/e2e/replication/fault_injection_test.go):
-   - Capability detection validation tests
-   - Provider factory functionality tests  
-   - No-op provider operation verification
-   - Iptables provider lifecycle tests (with skip conditions)
+### Phase 4: Testing  
+6. **Unit tests** - [test/e2e/helpers/fault_injection_test.go](test/e2e/helpers/fault_injection_test.go), [test/e2e/helpers/connectivity_baseline_test.go](test/e2e/helpers/connectivity_baseline_test.go), and [test/e2e/helpers/iptables_provider_test.go](test/e2e/helpers/iptables_provider_test.go):
+   - Provider factory, env parsing, NoOp behavior
+   - Connectivity baseline parsing and fence/reachable comparison
+   - Iptables DaemonSet template and fake-client helpers (no cluster required)
 
 ## 🔧 Architecture Overview
 
@@ -54,9 +53,8 @@ E2E Test Suite
 │   ├── IptablesFaultProvider (iptables backend)
 │   ├── NetworkFenceFaultProvider (CRD backend)
 │   └── NoOpFaultProvider (disabled)
-└── Test Integration
-    ├── Existing tests (unchanged)
-    └── New fault injection tests
+└── Helper unit tests (`go test ./test/e2e/helpers/...`)
+    └── Fault injection / iptables (not the replication Ginkgo suite)
 ```
 
 ## 🚀 Environment Variables Added
@@ -78,7 +76,8 @@ E2E_IPTABLES_CLEANUP_TIMEOUT=30s               # Cleanup timeout
 - `test/e2e/helpers/fault_injection.go` - Core framework and interfaces
 - `test/e2e/helpers/iptables_provider.go` - Iptables-based fault injection
 - `test/e2e/helpers/networkfence_provider.go` - NetworkFence CRD compatibility
-- `test/e2e/replication/fault_injection_test.go` - Integration tests
+- `test/e2e/helpers/fault_injection_test.go` - Fault injection unit tests
+- `test/e2e/helpers/connectivity_baseline_test.go` - Baseline probe comparison unit tests
 
 ### Modified Files
 - `test/e2e/replication/suite_test.go` - Added privileged DaemonSet capability detection

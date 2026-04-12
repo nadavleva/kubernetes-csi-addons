@@ -45,8 +45,9 @@ const (
 )
 
 // PeerFenceProvider defines the interface for network fault injection mechanisms.
-// This interface abstracts different backends (NetworkFence CRDs, iptables, etc.)
-// to provide a unified API for peer network isolation in E2E tests.
+// Backends differ: iptables uses host-level packet filtering and optional Jobs to probe reachability;
+// NetworkFence is implemented at the storage / CSI layer—whether the peer is “reachable” for DR flows
+// is reflected on VolumeReplication and related CRs, not via ICMP probes in the workload namespace.
 type PeerFenceProvider interface {
 	// FenceIP blocks network connectivity to the specified CIDR or IP address.
 	// This simulates network partition scenarios for disaster recovery testing.
@@ -70,18 +71,19 @@ type PeerFenceProvider interface {
 	// Returns error if unfencing operation fails.
 	UnfenceIP(ctx context.Context, targetCIDR string, params map[string]string) error
 
-	// VerifyConnectivity checks if network connectivity to the target is available.
-	// This verifies the current fence state and validates fence/unfence operations.
-	//
-	// Parameters:
-	//   - ctx: Context for the operation with timeout/cancellation
-	//   - targetCIDR: IP address or CIDR block to test connectivity
-	//   - expectedFenced: true if the target should be fenced (unreachable)
-	//
-	// Returns:
-	//   - bool: true if connectivity matches expected state
-	//   - error: error during connectivity verification (nil if successful)
-	VerifyConnectivity(ctx context.Context, targetCIDR string, expectedFenced bool) (bool, error)
+	// EstablishConnectivityBaseline is for iptables fault injection only: it runs short-lived Jobs
+	// (ping, ip route get, traceroute) and records which probes reached the target before OUTPUT REJECT.
+	// NetworkFence does not use packet probes—returns (nil, nil). NoOp returns (nil, nil).
+	// For NetworkFence scenarios, assert peer state via VolumeReplication conditions instead.
+	EstablishConnectivityBaseline(ctx context.Context, targetCIDR string) (*ConnectivityBaseline, error)
+
+	// VerifyConnectivity meaning depends on the provider:
+	//   - Iptables: optional packet probes vs baseline (see ConnectivityBaseline); if baseline is nil,
+	//     “reachable” means any probe succeeded (ICMP may be blocked without a fence).
+	//   - NetworkFence: compares expected fence state to the NetworkFence CR (and active fence tracking);
+	//     baseline is ignored—connectivity from the replication layer’s perspective belongs in VR tests.
+	//   - NoOp: always matches expectations.
+	VerifyConnectivity(ctx context.Context, targetCIDR string, expectedFenced bool, baseline *ConnectivityBaseline) (bool, error)
 
 	// IsSupported returns true if this fault injection mechanism is available in the cluster.
 	// This allows tests to skip gracefully when the required capabilities are not available.
@@ -200,7 +202,13 @@ func (p *NoOpFaultProvider) UnfenceIP(ctx context.Context, targetCIDR string, pa
 	return nil
 }
 
-func (p *NoOpFaultProvider) VerifyConnectivity(ctx context.Context, targetCIDR string, expectedFenced bool) (bool, error) {
+func (p *NoOpFaultProvider) EstablishConnectivityBaseline(ctx context.Context, targetCIDR string) (*ConnectivityBaseline, error) {
+	_ = ctx
+	_ = targetCIDR
+	return nil, nil
+}
+
+func (p *NoOpFaultProvider) VerifyConnectivity(ctx context.Context, targetCIDR string, expectedFenced bool, baseline *ConnectivityBaseline) (bool, error) {
 	// No-op: always report connectivity as expected (no actual fencing occurred)
 	return true, nil
 }
