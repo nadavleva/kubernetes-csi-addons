@@ -27,7 +27,7 @@ import (
 	"time"
 
 	"github.com/onsi/ginkgo/v2"
-	. "github.com/onsi/gomega"
+	. "github.com/onsi/gomega" //nolint:ST1001 // dot-import is standard for Gomega matchers in Ginkgo tests
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -1189,7 +1189,7 @@ func filterEndpointIPsToCIDRs(ips []string, nodeIPs map[string]struct{}) []strin
 }
 
 func cidrsFromEndpointsObject(ctx context.Context, c client.Client, key client.ObjectKey) []string {
-	ep := &corev1.Endpoints{}
+	ep := &corev1.Endpoints{} //nolint:SA1019 // v1 Endpoints still used alongside EndpointSlice for older clusters / Services
 	if err := c.Get(ctx, key, ep); err != nil {
 		Logf("[DEBUG]", "cidrsFromEndpointsObject: get Endpoints %s: %v", key, err)
 		return nil
