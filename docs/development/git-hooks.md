@@ -24,31 +24,63 @@ chmod +x .git/hooks/*
 ## Available Hooks
 
 ### pre-commit
-Runs **shellcheck** on all staged shell scripts (`.sh` files) before allowing a commit.
+Runs **shellcheck** and **yamllint** on all staged files before allowing a commit.
 
 **What it does:**
-- Checks all modified/staged shell scripts for syntax and quality issues
+- Checks all modified/staged shell scripts (`.sh`) with shellcheck
+- Checks all modified/staged YAML files (`.yaml`, `.yml`) with yamllint
 - Prevents commits if any linting errors are found
 - Shows detailed error messages to help you fix issues
+- Only checks for linting tools if files of that type are present
 
 **Example output:**
 ```
-🔍 Running pre-commit shellcheck on shell scripts...
+🔍 Running pre-commit linting checks...
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Shellcheck (Shell scripts)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   Checking hack/run-replication-e2e.sh... ✓
-  Checking test/e2e/utils/emergency-cleanup-iptables.sh... ✓
-✅ All shell scripts passed linting!
+Shellcheck: 1 passed, 0 failed
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Yamllint (YAML files)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  Checking config/manager/kustomization.yaml... ✓
+Yamllint: 1 passed, 0 failed
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Linting Summary:
+  ✓ Passed: 2
+  ✗ Failed: 0
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+✅ All files passed linting!
 ```
 
 **Example when there are errors:**
 ```
-🔍 Running pre-commit shellcheck on shell scripts...
+🔍 Running pre-commit linting checks...
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Shellcheck (Shell scripts)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   Checking hack/example.sh... ✗ FAILED
 
 In hack/example.sh line 22:
   local var=$(echo "test")
          ^-- SC2155: Declare and assign separately...
 
-❌ Commit blocked: Fix shellcheck errors above and try again
+Shellcheck: 0 passed, 1 failed
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Linting Summary:
+  ✓ Passed: 0
+  ✗ Failed: 1
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+❌ Commit blocked: Fix linting errors above and try again
+
+Files with errors:
+  - hack/example.sh
 ```
 
 ## Bypassing Hooks (Skip Hook for Single Commit)
@@ -76,6 +108,7 @@ git commit --no-verify -m "WIP: fixing linting issues"
 ### Required Tools
 - `git` - Version control
 - `shellcheck` - Shell script linting
+- `yamllint` - YAML file linting
 
 ### Installing shellcheck
 - **macOS**: `brew install shellcheck`
@@ -83,7 +116,14 @@ git commit --no-verify -m "WIP: fixing linting issues"
 - **Fedora/RHEL**: `dnf install ShellCheck`
 - **Other**: See https://github.com/koalaman/shellcheck
 
-If shellcheck is not installed, the hook will warn but not block commits.
+### Installing yamllint
+- **macOS**: `brew install yamllint`
+- **Ubuntu/Debian**: `apt-get install yamllint`
+- **Fedora/RHEL**: `dnf install yamllint`
+- **Python/pip**: `pip install yamllint`
+- **Other**: See https://github.com/adrienverge/yamllint
+
+If either tool is not installed, the hook will warn but not block commits for that file type.
 
 ## Testing Hooks Locally
 
