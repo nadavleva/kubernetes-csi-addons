@@ -36,26 +36,26 @@ main() {
 	log_info "Force Cleanup NetworkFence Resources"
 	log_info "======================================"
 	echo
-	
+
 	# Verify context exists
 	if ! kubectl_ctx cluster-info &>/dev/null; then
 		log_error "Cannot access cluster context: $CONTEXT"
 		exit 1
 	fi
-	
+
 	log_info "Working on context: $CONTEXT"
-	
+
 	# Check if NetworkFence CRD exists
 	if ! kubectl_ctx get crd networkfences.csiaddons.openshift.io &>/dev/null; then
 		log_warn "NetworkFence CRD not found in this cluster"
 		exit 0
 	fi
-	
+
 	# List current NetworkFences
 	echo
 	log_info "Current NetworkFences:"
 	kubectl_ctx get networkfence -A 2>/dev/null || echo "  (none found)"
-	
+
 	# Force cleanup NetworkFences
 	echo
 	log_info "Force removing NetworkFences..."
@@ -63,22 +63,22 @@ main() {
 		if [[ -z "$nf" ]]; then
 			continue
 		fi
-		
+
 		echo "  Processing NetworkFence: $nf"
-		
+
 		# Get CIDR info for diagnostics
 		local cidrs
 		cidrs=$(kubectl_ctx get networkfence "$nf" -o jsonpath='{.spec.cidrs}' 2>/dev/null || echo "unknown")
 		echo "    CIDRs: $cidrs"
-		
+
 		# Step 1: Remove finalizers
 		log_info "  Removing finalizers from $nf..."
 		kubectl_ctx patch networkfence "$nf" -p '{"metadata":{"finalizers":[]}}' --type=merge 2>/dev/null || true
-		
+
 		# Step 2: Delete with grace period 0 and force
 		log_info "  Force deleting $nf..."
 		kubectl_ctx delete networkfence "$nf" --ignore-not-found --grace-period=0 --force 2>/dev/null || true
-		
+
 		# Step 3: Verify deletion
 		sleep 1
 		if kubectl_ctx get networkfence "$nf" &>/dev/null; then
@@ -89,7 +89,7 @@ main() {
 			log_success "  $nf removed"
 		fi
 	done
-	
+
 	# Force cleanup NetworkFenceClasses
 	echo
 	log_info "Force removing NetworkFenceClasses..."
@@ -98,17 +98,17 @@ main() {
 			if [[ -z "$nfc" ]]; then
 				continue
 			fi
-			
+
 			echo "  Processing NetworkFenceClass: $nfc"
-			
+
 			# Step 1: Remove finalizers
 			log_info "  Removing finalizers from $nfc..."
 			kubectl_ctx patch networkfenceclass "$nfc" -p '{"metadata":{"finalizers":[]}}' --type=merge 2>/dev/null || true
-			
+
 			# Step 2: Delete with grace period 0 and force
 			log_info "  Force deleting $nfc..."
 			kubectl_ctx delete networkfenceclass "$nfc" --ignore-not-found --grace-period=0 --force 2>/dev/null || true
-			
+
 			# Step 3: Verify deletion
 			sleep 1
 			if kubectl_ctx get networkfenceclass "$nfc" &>/dev/null; then
@@ -120,7 +120,7 @@ main() {
 			fi
 		done
 	fi
-	
+
 	# Final verification
 	echo
 	log_info "Final verification:"
@@ -131,7 +131,7 @@ main() {
 	else
 		log_warn "⚠ $remaining NetworkFences still present"
 	fi
-	
+
 	local remaining_nfc
 	remaining_nfc=$(kubectl_ctx get networkfenceclass -o jsonpath='{.items | length}' 2>/dev/null || echo "0")
 	if [[ "$remaining_nfc" -eq 0 ]]; then
@@ -139,7 +139,7 @@ main() {
 	else
 		log_warn "⚠ $remaining_nfc NetworkFenceClasses still present"
 	fi
-	
+
 	echo
 	log_success "Force cleanup completed!"
 	echo

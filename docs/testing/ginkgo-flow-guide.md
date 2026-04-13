@@ -1,6 +1,6 @@
 # Ginkgo v2 Test Flow and Execution Guide
 
-This document explains how the Ginkgo v2 test framework is used in the CSI-Addons replication E2E test suite, covering test structure, execution flow, lifecycle management, and cleanup patterns.
+This document explains how the Ginkgo v2 test framework is used in the CSI-Addons replication end-to-end test suite, covering test structure, execution flow, lifecycle management, and cleanup patterns.
 
 ## 1. Overview
 
@@ -29,7 +29,7 @@ import (
 // TestReplicationE2E is the entry point called by `go test`
 func TestReplicationE2E(t *testing.T) {
 	RegisterFailHandler(Fail)      // Route Ginkgo failures to Go test failures
-	RunSpecs(t, "Replication E2E Suite")  // Execute all registered specs
+	RunSpecs(t, "Replication end-to-end Suite")  // Execute all registered specs
 }
 ```
 
@@ -37,7 +37,7 @@ func TestReplicationE2E(t *testing.T) {
 - `RegisterFailHandler(Fail)` tells Ginkgo to call `Fail()` when an assertion fails
 - `RunSpecs(t, description)` scans the package for registered `Describe` blocks and executes them
 
-**When called**: During `go test ./test/e2e/replication` or `make test-replication-e2e`
+**When called**: During `go test ./test/end-to-end/replication` or `make test-replication-end-to-end`
 
 ### 2.2 Init Functions (var = declarations)
 
@@ -65,7 +65,7 @@ var _ = BeforeSuite(func() {
 	Logf("[SETUP]", "checking USE_EXISTING_CLUSTER")
 	useExistingCluster = os.Getenv("USE_EXISTING_CLUSTER") == "true"
 	if !useExistingCluster {
-		Skip("Replication E2E suite requires USE_EXISTING_CLUSTER=true")
+		Skip("Replication end-to-end suite requires USE_EXISTING_CLUSTER=true")
 	}
 
 	// Load kubeconfig and create Kubernetes clients
@@ -114,7 +114,7 @@ var _ = ReportAfterEach(func(report types.SpecReport) {
 Executes **once after all specs complete**, with full test run information:
 
 ```go
-var _ = ReportAfterSuite("Replication E2E detailed summary", func(report types.Report) {
+var _ = ReportAfterSuite("Replication end-to-end detailed summary", func(report types.Report) {
 	// Report contains:
 	// - report.SpecReports: array of all SpecReport objects
 	// - report.SuiteDescription, report.SuitePath
@@ -212,13 +212,13 @@ Outer Describe          Inner Describe                    It block
 ### 4.1 Overall Suite Execution Timeline
 
 ```plaintext
-go test ./test/e2e/replication/...
+go test ./test/end-to-end/replication/...
         │
         ▼
 ┌─────────────────────────────────────┐
 │  Test Function Execution Begins     │  ← TestReplicationE2E(t *testing.T)
 │  RegisterFailHandler(Fail)          │  ← Gomega assertion handler
-│  RunSpecs(t, "Replication E2E...")  │  ← Ginkgo discovers and runs specs
+│  RunSpecs(t, "Replication end-to-end...")  │  ← Ginkgo discovers and runs specs
 └─────────────────────────────────────┘
         │
         ▼
@@ -391,7 +391,7 @@ CLEANUP COMPLETE
 ```plaintext
 Root Level
     │
-    Describe("Replication E2E", func() {
+    Describe("Replication end-to-end", func() {
         │
         Describe("EnableVolumeReplication API", func() {
             │
@@ -666,7 +666,7 @@ func DeleteVolumeReplicationWithCleanup(ctx context.Context, k8sClient client.Cl
 ### 6.1 Registration Phase (Init Time)
 
 ```plaintext
-go test ./test/e2e/replication
+go test ./test/end-to-end/replication
         ↓
 Go runtime loads package
         ↓
@@ -722,10 +722,10 @@ Test completes (Pass/Fail)
 
 ```go
 // Execute only specs matching "EnableVolumeReplication"
-make test-replication-e2e GINKGO_FOCUS="EnableVolumeReplication"
+make test-replication-end-to-end GINKGO_FOCUS="EnableVolumeReplication"
 
 // Execute only specs matching "L1-E-001"
-GINKGO_FOCUS="L1-E-001" ./hack/run-replication-e2e.sh
+GINKGO_FOCUS="L1-E-001" ./hack/run-replication-end-to-end.sh
 
 // In code, focus specific describe
 var _ = FDescribe("EnableVolumeReplication", func() {
@@ -734,7 +734,7 @@ var _ = FDescribe("EnableVolumeReplication", func() {
 ```
 
 **Pattern matching**:
-- Regex support: `GINKGO_FOCUS="L1-E-00[123]"` matches L1-E-001, L1-E-002, L1-E-003
+- Regular expression support: `GINKGO_FOCUS="L1-E-00[123]"` matches L1-E-001, L1-E-002, L1-E-003
 - Case sensitive: `GINKGO_FOCUS="enable"` does NOT match "EnableVolumeReplication"
 - Partial match: `GINKGO_FOCUS="E-001"` matches "L1-E-001" anywhere in spec name
 

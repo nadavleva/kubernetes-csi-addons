@@ -1,6 +1,6 @@
 # Git Pre-commit Hooks
 
-This repository uses git pre-commit hooks to catch linting issues locally before they're pushed to the CI pipeline.
+This repository uses Git pre-commit hooks to catch linting issues locally before they're pushed to the CI pipeline.
 
 ## Setup
 
@@ -11,14 +11,14 @@ After cloning the repository, run:
 ./scripts/setup-hooks.sh
 ```
 
-This will install all pre-commit hooks to `.git/hooks/` and make them executable.
+This will install all pre-commit hooks to `.Git/hooks/` and make them executable.
 
 ### Manual Setup
 If you prefer to set up manually:
 
 ```bash
-cp scripts/hooks/* .git/hooks/
-chmod +x .git/hooks/*
+cp scripts/hooks/* .Git/hooks/
+chmod +x .Git/hooks/*
 ```
 
 ## Available Hooks
@@ -40,7 +40,7 @@ Running pre-commit linting checks...
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Shellcheck (Shell scripts)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  Checking hack/run-replication-e2e.sh... Pass
+  Checking hack/run-replication-end-to-end.sh... Pass
 Shellcheck: 1 passed, 0 failed
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -88,15 +88,15 @@ Files with errors:
 If you need to bypass the pre-commit hook for **a single commit** (not recommended), you can use:
 
 ```bash
-git commit --no-verify
+Git commit --no-verify
 ```
 
 **Important**: The CI pipeline will still run the same checks and **fail if linting issues exist**. This should only be used as a temporary measure while you work on fixes.
 
 **Example:**
 ```bash
-git add .
-git commit --no-verify -m "WIP: fixing linting issues"
+Git add .
+Git commit --no-verify -m "WIP: fixing linting issues"
 # ... now run shellcheck and fix the issues
 # Then commit again without --no-verify to verify it passes
 ```
@@ -106,7 +106,7 @@ git commit --no-verify -m "WIP: fixing linting issues"
 ## Requirements
 
 ### Required Tools
-- `git` - Version control
+- `Git` - Version control
 - `shellcheck` - Shell script linting
 - `yamllint` - YAML file linting
 
@@ -114,14 +114,14 @@ git commit --no-verify -m "WIP: fixing linting issues"
 - **macOS**: `brew install shellcheck`
 - **Ubuntu/Debian**: `apt-get install shellcheck`
 - **Fedora/RHEL**: `dnf install ShellCheck`
-- **Other**: See https://github.com/koalaman/shellcheck
+- **Other**: See [shellcheck on GitHub](https://github.com/koalaman/shellcheck)
 
 ### Installing yamllint
 - **macOS**: `brew install yamllint`
 - **Ubuntu/Debian**: `apt-get install yamllint`
 - **Fedora/RHEL**: `dnf install yamllint`
 - **Python/pip**: `pip install yamllint`
-- **Other**: See https://github.com/adrienverge/yamllint
+- **Other**: See [yamllint on GitHub](https://github.com/adrienverge/yamllint)
 
 If either tool is not installed, the hook will warn but not block commits for that file type.
 
@@ -131,7 +131,7 @@ To test if your shell scripts pass linting before committing:
 
 ```bash
 # Check a specific file
-shellcheck hack/run-replication-e2e.sh
+shellcheck hack/run-replication-end-to-end.sh
 
 # Check all shell files
 find . -name "*.sh" -type f | xargs shellcheck
@@ -153,12 +153,12 @@ If you need to **disable hooks for multiple commits** without verification:
 
 ```bash
 # Disable the hook
-chmod -x .git/hooks/pre-commit
+chmod -x .Git/hooks/pre-commit
 
 # Now perform your commits without hook checks
-git add .
-git commit -m "WIP: work in progress"
-git commit -m "Continue working"
+Git add .
+Git commit -m "WIP: work in progress"
+Git commit -m "Continue working"
 
 # Re-enable the hook when done
 ./scripts/setup-hooks.sh
@@ -167,7 +167,7 @@ git commit -m "Continue working"
 **Verify the hook status:**
 ```bash
 # Check if hook is executable (enabled)
-ls -la .git/hooks/pre-commit
+ls -la .Git/hooks/pre-commit
 # Expected: -rwxr-xr-x (executable)
 
 # Disabled hook shows:
@@ -178,11 +178,11 @@ ls -la .git/hooks/pre-commit
 
 ```bash
 # Remove the installed hook
-rm .git/hooks/pre-commit
+rm .Git/hooks/pre-commit
 
 # Perform commits without checking
-git add .
-git commit -m "WIP: work in progress"
+Git add .
+Git commit -m "WIP: work in progress"
 
 # Reinstall the hook
 ./scripts/setup-hooks.sh
@@ -192,15 +192,15 @@ git commit -m "WIP: work in progress"
 
 ```bash
 # Bypass hook for individual commits
-git commit --no-verify -m "Commit message"
+Git commit --no-verify -m "Commit message"
 ```
 
 **When to use each option:**
 | Scenario | Method | Command |
 |----------|--------|---------|
-| Single commit to bypass | `--no-verify` | `git commit --no-verify` |
-| Multiple commits (dev branch) | Disable hook | `chmod -x .git/hooks/pre-commit` |
-| Completely remove hook | Uninstall | `rm .git/hooks/pre-commit` |
+| Single commit to bypass | `--no-verify` | `Git commit --no-verify` |
+| Multiple commits (dev branch) | Disable hook | `chmod -x .Git/hooks/pre-commit` |
+| Completely remove hook | Uninstall | `rm .Git/hooks/pre-commit` |
 
 ## Re-enabling Hooks
 
@@ -211,7 +211,7 @@ After you're done working or ready to validate your code:
 ./scripts/setup-hooks.sh
 
 # Verify it's now executable
-ls -la .git/hooks/pre-commit
+ls -la .Git/hooks/pre-commit
 # Should show: -rwxr-xr-x
 ```
 
@@ -227,7 +227,7 @@ The hook warned about this but allowed the commit. Install shellcheck (see Requi
 ### Hook not running
 Verify it's executable:
 ```bash
-ls -la .git/hooks/pre-commit
+ls -la .Git/hooks/pre-commit
 # Should show: -rwxr-xr-x (executable)
 ```
 
@@ -246,7 +246,7 @@ shellcheck <your-file>.sh
 
 The same linting checks run in the GitHub Actions CI pipeline:
 - Workflow: `.github/workflows/lint-extras.yaml`
-- Check: "Lint Code Base" (uses super-linter/slim@v7)
+- Check: "Lint codebase" (uses super-linter/slim@v7)
 
 **Key takeaway**: Fixing linting issues locally before committing prevents CI failures.
 
@@ -256,10 +256,10 @@ When adding new shell scripts:
 1. Make sure they follow bash best practices
 2. Run shellcheck before committing
 3. The pre-commit hook will catch issues automatically
-4. If you need to commit without fixes, use `git commit --no-verify` (but fix them before pushing)
+4. If you need to commit without fixes, use `Git commit --no-verify` (but fix them before pushing)
 
 ## References
 
 - [Shellcheck Wiki](https://www.shellcheck.net/)
 - [Bash Best Practices](https://mywiki.wooledge.org/BashGuide)
-- [Git Hooks Documentation](https://git-scm.com/book/en/v2/Customizing-Git-Git-Hooks)
+- [Git Hooks Documentation](https://Git-scm.com/book/en/v2/Customizing-Git-Git-Hooks)

@@ -1,8 +1,8 @@
-# Replication E2E Test Suite
+# Replication end-to-end Test Suite
 
-The replication E2E suite runs cluster-facing tests that create VolumeReplication and VolumeReplicationClass resources and assert on their status. It implements scenarios from the Layer-1 CSI Replication Add-on Test Matrix.
+The replication end-to-end suite runs cluster-facing tests that create VolumeReplication and VolumeReplicationClass resources and assert on their status. It implements scenarios from the Layer-1 CSI Replication Add-on Test Matrix.
 
-**This document is the source of truth** for the replication E2E test plan. The following external documents were used as references:
+**This document is the source of truth** for the replication end-to-end test plan. The following external documents were used as references:
 
 - [Layer-1 VolumeReplication Test Matrix (layer-1-vr-tests.md)](https://github.com/nadavleva/csi_replication_certs/blob/main/docs/layer-1-vr-tests.md)
 - [Layer-1 VRG Test Matrix (layer-1-vrg-tests.md)](https://github.com/nadavleva/csi_replication_certs/blob/main/docs/layer-1-vrg-tests.md)
@@ -10,30 +10,30 @@ The replication E2E suite runs cluster-facing tests that create VolumeReplicatio
 
 ## Location
 
-- **Package**: `test/e2e/replication/`
+- **Package**: `test/end-to-end/replication/`
 - **Scenarios**: EnableVolumeReplication (L1-E-001 through L1-E-009), DisableVolumeReplication (L1-DIS-001, L1-DIS-002), GetVolumeReplicationInfo (L1-INFO-001, L1-INFO-005, L1-INFO-008, L1-INFO-011, L1-INFO-012, L1-INFO-013, L1-INFO-014), and Full DR (two clusters). L1-E-003 blocks the peer via **iptables** (default) or **NetworkFence** (`E2E_FAULT_INJECTOR`) so EnableVolumeReplication fails, then unfences and asserts success. L1-DIS-002 requires DR1_CONTEXT and DR2_CONTEXT; tests that need two clusters skip with a log when not configured.
 
 ## Cleanup
 
-**On every run:** The run script registers an **EXIT trap** that runs `clean-replication-e2e-resources.sh` when the script exits (success, failure, or panic/timeout). So PVCs, VRs, test VRCs, and e2e-replication-* namespaces are cleaned even if tests panic or hit the test timeout.
+**On every run:** The run script registers an **EXIT trap** that runs `clean-replication-end-to-end-resources.sh` when the script exits (success, failure, or panic/timeout). So PVCs, VRs, test VRCs, and end-to-end-replication-* namespaces are cleaned even if tests panic or hit the test timeout.
 
 **Before a run:** If a previous run left resources stuck (e.g. Terminating PVCs or VRs), you can clean them manually first:
 
 ```bash
-make clean-replication-e2e
+make clean-replication-end-to-end
 # or
-./hack/clean-replication-e2e-resources.sh
+./hack/clean-replication-end-to-end-resources.sh
 ```
 
 To preview what would be deleted without making changes:
 
 ```bash
-./hack/clean-replication-e2e-resources.sh --dry-run
+./hack/clean-replication-end-to-end-resources.sh --dry-run
 ```
 
-The script removes finalizers from VolumeReplications and PVCs in `e2e-replication-*` namespaces, deletes those resources plus any VolumeSnapshots, deletes the namespaces, and deletes test-created VolumeReplicationClasses (names starting with `vrc-snapshot-`, `vrc-journal-`, etc.).
+The script removes finalizers from VolumeReplications and PVCs in `end-to-end-replication-*` namespaces, deletes those resources plus any VolumeSnapshots, deletes the namespaces, and deletes test-created VolumeReplicationClasses (names starting with `vrc-snapshot-`, `vrc-journal-`, etc.).
 
-**Planned enhancement:** Create a failure report (PVC, VolumeReplication, VolumeReplicationGroup, events, pod logs from test namespaces and `REPLICATION_SECRET_NAMESPACE`) **before** cleanup on test failure, and store it under `Logs/<run-folder>/`. See [.github/ISSUE_TEMPLATE/replication-e2e-failure-report.md](../../.github/ISSUE_TEMPLATE/replication-e2e-failure-report.md) for the full issue description.
+**Planned enhancement:** Create a failure report (PVC, VolumeReplication, VolumeReplicationGroup, events, pod logs from test namespaces and `REPLICATION_SECRET_NAMESPACE`) **before** cleanup on test failure, and store it under `Logs/<run-folder>/`. See [.github/ISSUE_TEMPLATE/replication-end-to-end-failure-report.md](../../.github/ISSUE_TEMPLATE/replication-end-to-end-failure-report.md) for the full issue description.
 
 ## Prerequisites
 
@@ -44,16 +44,16 @@ The script removes finalizers from VolumeReplications and PVCs in `e2e-replicati
 
 ## Running the suite
 
-### Run all replication E2E tests
+### Run all replication end-to-end tests
 
 ```bash
-make test-replication-e2e
+make test-replication-end-to-end
 ```
 
 Or directly:
 
 ```bash
-./hack/run-replication-e2e.sh
+./hack/run-replication-end-to-end.sh
 ```
 
 Output is written to `Logs/replication-e2e_<timestamp>.log` and to stdout. The run script uses `stdbuf -oL` (when available) so output is line-buffered and appears as tests run instead of only at the end. Each test logs steps (e.g. "Starting L1-E-001", "Creating namespace", "Creating PVC...", "[PVC] ns/name phase=...", "[VR] ...") so you can see progress during long waits.
@@ -64,19 +64,19 @@ Use the `GINKGO_FOCUS` environment variable to run only tests whose descriptions
 
 ```bash
 # Run a single test by Layer-1 ID
-GINKGO_FOCUS="L1-E-001" ./hack/run-replication-e2e.sh
+GINKGO_FOCUS="L1-E-001" ./hack/run-replication-end-to-end.sh
 
 # Run all EnableVolumeReplication tests
-GINKGO_FOCUS="EnableVolumeReplication" ./hack/run-replication-e2e.sh
+GINKGO_FOCUS="EnableVolumeReplication" ./hack/run-replication-end-to-end.sh
 
 # Run all GetVolumeReplicationInfo tests
-GINKGO_FOCUS="GetVolumeReplicationInfo" ./hack/run-replication-e2e.sh
+GINKGO_FOCUS="GetVolumeReplicationInfo" ./hack/run-replication-end-to-end.sh
 ```
 
 With make:
 
 ```bash
-make test-replication-e2e GINKGO_FOCUS="L1-E-001"
+make test-replication-end-to-end GINKGO_FOCUS="L1-E-001"
 ```
 
 ### Optional environment variables
@@ -107,16 +107,16 @@ Examples:
 
 ```bash
 # Run with iptables fault injection (default)
-make test-replication-e2e GINKGO_FOCUS="L1-E-003"
+make test-replication-end-to-end GINKGO_FOCUS="L1-E-003"
 
 # Run with NetworkFence CSI fault injection (recommended for CSI-Addons testing)
-E2E_FAULT_INJECTOR=networkfence make test-replication-e2e GINKGO_FOCUS="L1-E-003"
+E2E_FAULT_INJECTOR=networkfence make test-replication-end-to-end GINKGO_FOCUS="L1-E-003"
 
 # Disable fault injection entirely (skip L1-E-003)
-E2E_FAULT_INJECTOR=none make test-replication-e2e
+E2E_FAULT_INJECTOR=none make test-replication-end-to-end
 ```
 
-**L1-E-003 NetworkFence (Ceph CSI):** The Ceph CSI driver requires `clusterID` in NetworkFenceClass parameters for network fencing. For Rook, use the cluster namespace (e.g. `rook-ceph`). The e2e suite adds this automatically when the provisioner contains "ceph":
+**L1-E-003 NetworkFence (Ceph CSI):** The Ceph CSI driver requires `clusterID` in NetworkFenceClass parameters for network fencing. For Rook, use the cluster namespace (e.g. `rook-ceph`). The end-to-end suite adds this automatically when the provisioner contains "ceph":
 
 ```yaml
 parameters:
@@ -137,7 +137,7 @@ Set `FENCE_CLUSTER_ID` to override the inferred value.
 Example:
 
 ```bash
-REPLICATION_SECRET_NAME=rook-csi-rbd-provisioner REPLICATION_SECRET_NAMESPACE=rook-ceph make test-replication-e2e
+REPLICATION_SECRET_NAME=rook-csi-rbd-provisioner REPLICATION_SECRET_NAMESPACE=rook-ceph make test-replication-end-to-end
 ```
 
 ## Test Implementation Status
@@ -419,25 +419,25 @@ Together, they ensure comprehensive failure scenario coverage for disaster recov
   - May require RBD configuration or driver-level changes
 
 #### 2. L1-PROM-005: Promote secondary to primary with array unreachable (force=false)
-- **Issue**: [#9 - Test Infrastructure Gap: Support for Array/Storage Unreachability Simulation in E2E Tests](https://github.com/nadavleva/kubernetes-csi-addons/issues/9)
+- **Issue**: [#9 - Test Infrastructure Gap: Support for Array/Storage Unreachability Simulation in end-to-end Tests](https://github.com/nadavleva/kubernetes-csi-addons/issues/9)
 - **Root Cause**: Test infrastructure cannot simulate local storage array unavailability
 - **Gap**: Current infrastructure only supports NetworkFence (blocks peer cluster network access)
 - **What's Missing**: Mechanism to make local storage backend unavailable (e.g., Ceph pool offline)
 - **Expected Test Behavior**: CSI driver should report storage unavailable; PromoteVolume RPC fails; VR shows Degraded=True with FailedToPromote reason
 
 #### 3. L1-PROM-006: Promote secondary to primary with array unreachable (force=true)
-- **Issue**: [#9 - Test Infrastructure Gap: Support for Array/Storage Unreachability Simulation in E2E Tests](https://github.com/nadavleva/kubernetes-csi-addons/issues/9)
+- **Issue**: [#9 - Test Infrastructure Gap: Support for Array/Storage Unreachability Simulation in end-to-end Tests](https://github.com/nadavleva/kubernetes-csi-addons/issues/9)
 - **Root Cause**: Test infrastructure cannot simulate local storage array unavailability
 - **Expected Test Behavior**: force=true should NOT override storage layer failures; operation still fails because local storage is unreachable
 - **Key Validation**: force parameter affects peer coordination only, not storage layer access
 
 #### 4. L1-DEM-005: Demote primary to secondary with array unreachable (force=false)
-- **Issue**: [#9 - Test Infrastructure Gap: Support for Array/Storage Unreachability Simulation in E2E Tests](https://github.com/nadavleva/kubernetes-csi-addons/issues/9)
+- **Issue**: [#9 - Test Infrastructure Gap: Support for Array/Storage Unreachability Simulation in end-to-end Tests](https://github.com/nadavleva/kubernetes-csi-addons/issues/9)
 - **Root Cause**: Test infrastructure cannot simulate local storage array unavailability
 - **Expected Test Behavior**: DemoteVolume RPC requires primary storage access; when storage is unreachable, operation fails with Degraded=True, FailedToDemote reason
 
 #### 5. L1-DEM-006: Demote primary to secondary with array unreachable (force=true)
-- **Issue**: [#9 - Test Infrastructure Gap: Support for Array/Storage Unreachability Simulation in E2E Tests](https://github.com/nadavleva/kubernetes-csi-addons/issues/9)
+- **Issue**: [#9 - Test Infrastructure Gap: Support for Array/Storage Unreachability Simulation in end-to-end Tests](https://github.com/nadavleva/kubernetes-csi-addons/issues/9)
 - **Root Cause**: Test infrastructure cannot simulate local storage array unavailability
 - **Expected Test Behavior**: force=true still fails when primary storage is unavailable; force parameter cannot override storage layer access requirements
 
@@ -549,7 +549,7 @@ Result: Partial cleanup, dangling images remain
 **For failed tests with dangling images:**
 - Orphaned mirror image: 1-2 GiB per orphaned volume
 - Failed test run (42 tests): Up to 84+ GiB of dangling images if all fail
-- E2E test suite runs (daily): Hundreds of GiB accumulation risk
+- end-to-end test suite runs (daily): Hundreds of GiB accumulation risk
 
 ### Identifying Dangling Images
 
@@ -569,7 +569,7 @@ kubectl get pvc -A -o jsonpath='{.items[*].spec.volumeName}' | xargs -I {} \
 
 **For test-specific images:**
 ```bash
-# E2E test images follow naming pattern: pvc-<random-suffix> or vr-<random-suffix>
+# end-to-end test images follow naming pattern: pvc-<random-suffix> or vr-<random-suffix>
 rbd ls --pool <pool-name> | grep -E 'pvc-|vr-'
 
 # Check for images older than test run duration (e.g., 1 hour old)
@@ -578,7 +578,7 @@ rbd info --pool <pool-name> <image> | grep 'create_timestamp'
 
 ### Current Cleanup Strategy (Limitations)
 
-**Current cleanup (in `clean-replication-e2e-resources.sh`):**
+**Current cleanup (in `clean-replication-end-to-end-resources.sh`):**
 1. Deletes K8s PVCs (triggers RBD deletion)
 2. Waits for RBD deletion via K8s event watching
 3. Removes VR/VRC finalizers if stuck
@@ -629,14 +629,14 @@ rbd info --pool <pool-name> <image> | grep 'create_timestamp'
 
 ### Test Cleanup Enhancements Required
 
-**Updates needed to `clean-replication-e2e-resources.sh`:**
+**Updates needed to `clean-replication-end-to-end-resources.sh`:**
 
 ```bash
 #!/bin/bash
 # Enhanced cleanup with dangling image detection
 
 POOL="${CEPH_POOL:-rbd}"
-NAMESPACE_PREFIX="e2e-replication-"
+NAMESPACE_PREFIX="end-to-end-replication-"
 
 # 1. Record RBD images before cleanup
 echo "[PRE] Listing RBD images before cleanup..."
@@ -781,14 +781,14 @@ fi
 
 ## Cleanup and finalizers
 
-The controller adds finalizers to VolumeReplication (`replication.storage.openshift.io`) and to PVCs (`replication.storage.openshift.io/pvc-protection`). On delete, the controller removes them after disabling replication. The e2e suite cleanup:
+The controller adds finalizers to VolumeReplication (`replication.storage.openshift.io`) and to PVCs (`replication.storage.openshift.io/pvc-protection`). On delete, the controller removes them after disabling replication. The end-to-end suite cleanup:
 
 1. Deletes VR first, then VRC, then PVC, then namespace.
 2. Waits up to 45 seconds for each resource to be gone after delete.
 3. If a VR or PVC is still present (e.g. controller cannot reach the driver), the test removes the replication finalizer so the resource can be deleted and the namespace can terminate.
 4. **Multi-cluster cleanup:** When DR1_CONTEXT and DR2_CONTEXT are set, cleanup script removes finalizers and deletes resources from **all clusters** (loops through both contexts). Orphaned resources on secondary cluster are properly cleaned up even if primary cleanup fails.
 
-So leftover Terminating PVCs or VRs from failed runs should be cleared by the next run's cleanup, or you can remove the finalizers manually if needed. The cleanup script (`clean-replication-e2e-resources.sh`) has been updated to support multi-cluster contexts, ensuring no orphaned resources remain on either cluster.
+So leftover Terminating PVCs or VRs from failed runs should be cleared by the next run's cleanup, or you can remove the finalizers manually if needed. The cleanup script (`clean-replication-end-to-end-resources.sh`) has been updated to support multi-cluster contexts, ensuring no orphaned resources remain on either cluster.
 
 ## VolumeReplication status.State = Unknown
 
@@ -804,7 +804,7 @@ If either call fails (e.g. sidecar unreachable, driver error, or no CSIAddonsNod
 - **Controller and VRs in the same cluster**
   The CSI-Addons controller only reconciles VRs in the cluster where it runs. If VRs are created in cluster A but the controller runs in cluster B, those VRs are never reconciled and State is never set.
 - **VRC provisioner must match CSIAddonsNode driver name**
-  The controller looks up a CSIAddonsNode whose `spec.driver.name` **exactly** matches the VolumeReplicationClass `spec.provisioner`. If they differ (e.g. VRC uses `rook-ceph.rbd.csi.ceph.com` but CSIAddonsNode uses `rbd.csi.ceph.com`), the controller never finds a connection and State stays Unknown. The e2e tests default the VRC provisioner to `rook-ceph.rbd.csi.ceph.com`; set env **`CSI_PROVISIONER`** to match your CSIAddonsNode driver name when running the suite (and when creating VRCs manually).
+  The controller looks up a CSIAddonsNode whose `spec.driver.name` **exactly** matches the VolumeReplicationClass `spec.provisioner`. If they differ (e.g. VRC uses `rook-ceph.rbd.csi.ceph.com` but CSIAddonsNode uses `rbd.csi.ceph.com`), the controller never finds a connection and State stays Unknown. The end-to-end tests default the VRC provisioner to `rook-ceph.rbd.csi.ceph.com`; set env **`CSI_PROVISIONER`** to match your CSIAddonsNode driver name when running the suite (and when creating VRCs manually).
 - **CSIAddonsNode exists and supports VolumeReplication**
   If there is no CSIAddonsNode for the provisioner, or it does not advertise VolumeReplication, the controller cannot call the driver.
 - **Controller logs**
@@ -817,22 +817,22 @@ If either call fails (e.g. sidecar unreachable, driver error, or no CSIAddonsNod
 # Or for a specific VR: ./hack/diagnose-replication-vr.sh <namespace> <vr-name>
 ```
 
-Example: `./hack/diagnose-replication-vr.sh e2e-replication-b8c5f92a vr-snapshot`
+Example: `./hack/diagnose-replication-vr.sh end-to-end-replication-b8c5f92a vr-snapshot`
 
 The tests accept either `Primary` or `Unknown` when the Replicating condition is True.
 
-**Error conditions:** The controller signals failure by setting **ConditionDegraded** with **Status=True** (and Reason=Error, etc.), and **ConditionCompleted** with Status=False and a failure Reason (FailedToPromote, FailedToDemote, FailedToResync). It does not use ConditionFalse alone to mean "error". The e2e helpers (`hasVolumeReplicationErrorCondition`, `WaitForVolumeReplicationError`) are written to match this so that: (1) tests that expect an error (e.g. L1-INFO-008) detect it, and (2) L1-E-005’s "assert no error" on the idempotent second VR does not false-positive when the controller leaves the duplicate VR’s status untouched.
+**Error conditions:** The controller signals failure by setting **ConditionDegraded** with **Status=True** (and Reason=Error, etc.), and **ConditionCompleted** with Status=False and a failure Reason (FailedToPromote, FailedToDemote, FailedToResync). It does not use ConditionFalse alone to mean "error". The end-to-end helpers (`hasVolumeReplicationErrorCondition`, `WaitForVolumeReplicationError`) are written to match this so that: (1) tests that expect an error (e.g. L1-INFO-008) detect it, and (2) L1-E-005’s "assert no error" on the idempotent second VR does not false-positive when the controller leaves the duplicate VR’s status untouched.
 
 ## Single cluster vs full DR (two clusters)
 
-**Single cluster (default):** Omit `DR1_CONTEXT` and `DR2_CONTEXT`; the suite uses the current kubeconfig context. Use `kubectl config use-context <name>` then `make test-replication-e2e` to target a cluster.
+**Single cluster (default):** Omit `DR1_CONTEXT` and `DR2_CONTEXT`; the suite uses the current kubeconfig context. Use `kubectl config use-context <name>` then `make test-replication-end-to-end` to target a cluster.
 
-The e2e suite creates all resources (namespaces, PVCs, VolumeReplications, VolumeReplicationClasses) in **the cluster that your kubeconfig is currently using**. It does not have a built-in notion of “DR1” vs “DR2”; it simply uses the default context (or the one set by `KUBECONFIG`).
+The end-to-end suite creates all resources (namespaces, PVCs, VolumeReplications, VolumeReplicationClasses) in **the cluster that your kubeconfig is currently using**. It does not have a built-in notion of “DR1” vs “DR2”; it simply uses the default context (or the one set by `KUBECONFIG`).
 
 **Full DR mode (two clusters):** Set both `DR1_CONTEXT` and `DR2_CONTEXT` to context names in your kubeconfig. The suite builds two clients, uses DR1 as primary, and runs "Full DR (two clusters)" tests. Example:
 
 ```bash
-DR1_CONTEXT=dr1 DR2_CONTEXT=dr2 REPLICATION_SECRET_NAME=rook-csi-rbd-provisioner REPLICATION_SECRET_NAMESPACE=rook-ceph make test-replication-e2e
+DR1_CONTEXT=dr1 DR2_CONTEXT=dr2 REPLICATION_SECRET_NAME=rook-csi-rbd-provisioner REPLICATION_SECRET_NAMESPACE=rook-ceph make test-replication-end-to-end
 ```
 
 Use `GetK8sClientForCluster(ClusterDR1)` and `GetK8sClientForCluster(ClusterDR2)` to target either cluster in tests.
@@ -841,7 +841,7 @@ Use `GetK8sClientForCluster(ClusterDR1)` and `GetK8sClientForCluster(ClusterDR2)
 
 ## Note
 
-These tests require `USE_EXISTING_CLUSTER=true`. Do not run them with `make test` (which uses envtest and no real cluster). Use `make test-replication-e2e` or `./hack/run-replication-e2e.sh` instead.
+These tests require `USE_EXISTING_CLUSTER=true`. Do not run them with `make test` (which uses envtest and no real cluster). Use `make test-replication-end-to-end` or `./hack/run-replication-end-to-end.sh` instead.
 
 ---
 
@@ -972,7 +972,7 @@ The full test plan below enumerates all endpoint, state, and workflow-driven sce
 - ResyncVolume: 2+ scenarios
 - GetVolumeReplicationInfo: 14 scenarios
 
-*Note: Tests marked with "Not Supported" involve unreachable storage/cluster scenarios that are not supported in the current Kubernetes CSI test framework and will be implemented in later stage. See [disruptive tests documentation](https://github.com/nadavleva/kubernetes_csiaddontests/blob/docs/storage-test-framework/test/e2e/storage/README.md#disruptive-tests) for details.*
+*Note: Tests marked with "Not Supported" involve unreachable storage/cluster scenarios that are not supported in the current Kubernetes CSI test framework and will be implemented in later stage. See [disruptive tests documentation](https://github.com/nadavleva/kubernetes_csiaddontests/blob/docs/storage-test-framework/test/end-to-end/storage/README.md#disruptive-tests) for details.*
 
 ### Volume Group Operations (using VolumeReplication gRPC APIs with replicationsource field)
 

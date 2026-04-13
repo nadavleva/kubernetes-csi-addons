@@ -243,7 +243,7 @@ if [[ -f "${COVER_CONTROLLER}" ]] || [[ -f "${COVER_SUBPKG}" ]]; then
 	echo ""
 	echo "Coverage files:"
 	[[ -f "${COVER_CONTROLLER}" ]] && echo "  ${COVER_CONTROLLER}" && go tool cover -func="${COVER_CONTROLLER}" | tail -1
-	[[ -f "${COVER_SUBPKG}" ]]    && echo "  ${COVER_SUBPKG}"    && go tool cover -func="${COVER_SUBPKG}" | tail -1
+	[[ -f "${COVER_SUBPKG}" ]] && echo "  ${COVER_SUBPKG}" && go tool cover -func="${COVER_SUBPKG}" | tail -1
 fi
 echo ""
 
@@ -258,13 +258,13 @@ create_focused_junit_report() {
 	local temp_testcases
 	temp_testcases=$(mktemp)
 	# Match replication-related testcase names
-	sed -n '/<testcase.*name="[^"]*[Rr]eplication[^"]*"/,/<\/testcase>/p' "${full_junit_file}" > "${temp_testcases}" || true
+	sed -n '/<testcase.*name="[^"]*[Rr]eplication[^"]*"/,/<\/testcase>/p' "${full_junit_file}" >"${temp_testcases}" || true
 	local total failed
 	total=$(grep -c '<testcase' "${temp_testcases}" 2>/dev/null || echo "0")
 	failed=$(grep -c 'status="failed"' "${temp_testcases}" 2>/dev/null || echo "0")
 	local total_time
 	total_time=$(grep '<testsuites' "${full_junit_file}" | sed -n 's/.*time="\([^"]*\)".*/\1/p' || echo "0")
-	cat > "${focused_junit_file}" << EOF
+	cat >"${focused_junit_file}" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <testsuites tests="${total}" failures="${failed}" time="${total_time}">
 	<testsuite name="CSI-Addons Replication" tests="${total}" failures="${failed}" time="${total_time}" timestamp="$(date -Iseconds)">
@@ -273,7 +273,7 @@ EOF
 		cat "${temp_testcases}"
 		echo "    </testsuite>"
 		echo "</testsuites>"
-	} >> "${focused_junit_file}"
+	} >>"${focused_junit_file}"
 	rm -f "${temp_testcases}"
 	echo "✓ Focused JUnit report: ${focused_junit_file}"
 	return 0

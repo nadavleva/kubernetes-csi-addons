@@ -174,7 +174,7 @@ The **[kubernetes-csi/csi-test](https://github.com/kubernetes-csi/csi-test)** fr
 
 **CSI-Test Framework Components:**
 - **[Sanity Tests](https://github.com/kubernetes-csi/csi-test/tree/master/pkg/sanity)** - Core CSI specification compliance testing
-- **[E2E Tests](https://github.com/kubernetes-csi/csi-test/tree/master/test)** - End-to-end CSI driver integration testing
+- **[end-to-end Tests](https://github.com/kubernetes-csi/csi-test/tree/master/test)** - End-to-end CSI driver integration testing
 - **[Mock Driver](https://github.com/kubernetes-csi/csi-test/tree/master/mock)** - Reference mock CSI driver implementation
 
 ### Why Not Using csi-test Framework
@@ -565,7 +565,7 @@ client := fake.NewClientBuilder().WithScheme(scheme).WithRuntimeObjects(obj...).
 | **Unit Tests** | Fake Client (No CRDs) | Mock/Fake gRPC | Fast unit testing |
 | **EnvTest Integration** | Auto CRD Injection | Mock/Fake gRPC | Controller logic validation |
 | **Real Cluster Integration** | Pre-existing CRDs Required | Mock/Fake gRPC | Real cluster controller testing |
-| **Full E2E (Missing)** | Pre-existing CRDs Required | Real gRPC Endpoints | Complete integration validation |
+| **Full end-to-end (Missing)** | Pre-existing CRDs Required | Real gRPC Endpoints | Complete integration validation |
 
 ## Current Test Implementation Analysis
 

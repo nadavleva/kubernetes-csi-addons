@@ -28,12 +28,12 @@ log_error() { echo -e "${RED}[✗]${NC} $1"; }
 # Detect container runtime
 detect_container_runtime() {
 	if command -v podman >/dev/null 2>&1; then
-	    echo "podman"
+		echo "podman"
 	elif command -v docker >/dev/null 2>&1; then
-	    echo "docker"
+		echo "docker"
 	else
-	    log_error "Neither podman nor docker found"
-	    exit 1
+		log_error "Neither podman nor docker found"
+		exit 1
 	fi
 }
 

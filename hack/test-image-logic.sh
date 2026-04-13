@@ -9,7 +9,7 @@ echo "Testing improved iptables image selection logic..."
 echo ""
 echo "Test 1: Simulating environment without kind/k3d"
 PATH_BACKUP="$PATH"
-export PATH="/usr/bin:/bin"  # Remove kind/k3d from path
+export PATH="/usr/bin:/bin" # Remove kind/k3d from path
 
 # shellcheck disable=SC2034  # IPTABLES_IMAGE is a reference/example for the logic being tested
 IPTABLES_IMAGE="csi-addons/iptables-manager:latest"

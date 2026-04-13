@@ -1,10 +1,10 @@
 # Fault Injection Framework
 
-This document describes the network fault injection framework implemented for E2E testing in the CSI-Addons project. The framework provides a vendor-agnostic approach to network fencing with multiple backend providers.
+This document describes the network fault injection framework implemented for end-to-end testing in the CSI-Addons project. The framework provides a vendor-agnostic approach to network fencing with multiple backend providers.
 
 ## Overview
 
-The fault injection framework allows E2E tests to simulate network failures by blocking IP addresses or CIDR ranges. This is crucial for testing disaster recovery scenarios and replication behavior under network partition conditions.
+The fault injection framework allows end-to-end tests to simulate network failures by blocking IP addresses or CIDR ranges. This is crucial for testing disaster recovery scenarios and replication behavior under network partition conditions.
 
 ## Architecture
 
@@ -80,7 +80,7 @@ The `NewFaultInjectionProvider()` function creates the appropriate provider base
 ### Basic Setup
 
 ```go
-import "github.com/csi-addons/kubernetes-csi-addons/test/e2e/helpers"
+import "github.com/csi-addons/kubernetes-csi-addons/test/end-to-end/helpers"
 
 // Create provider
 config := helpers.FaultInjectionConfig{
@@ -189,13 +189,13 @@ The framework includes comprehensive integration tests covering:
 
 ```bash
 # Use iptables provider (requires privileged containers)
-E2E_FAULT_INJECTOR=iptables go test ./test/e2e/replication/
+E2E_FAULT_INJECTOR=iptables go test ./test/end-to-end/replication/
 
 # Use NetworkFence provider (requires CSI-Addons controller)
-E2E_FAULT_INJECTOR=networkfence go test ./test/e2e/replication/
+E2E_FAULT_INJECTOR=networkfence go test ./test/end-to-end/replication/
 
 # Use NoOp provider (no actual fault injection)
-E2E_FAULT_INJECTOR=none go test ./test/e2e/replication/
+E2E_FAULT_INJECTOR=none go test ./test/end-to-end/replication/
 ```
 
 ## Security Considerations

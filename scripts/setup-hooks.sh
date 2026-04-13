@@ -26,13 +26,13 @@ fi
 # Copy and make executable all hook scripts
 for hook_file in "$HOOKS_SRC_DIR"/*; do
 	if [ -f "$hook_file" ]; then
-	    hook_name=$(basename "$hook_file")
-	    dest_path="$HOOKS_DEST_DIR/$hook_name"
-	    
-	    echo -n "  Installing $hook_name... "
-	    cp "$hook_file" "$dest_path"
-	    chmod +x "$dest_path"
-	    echo "OK"
+		hook_name=$(basename "$hook_file")
+		dest_path="$HOOKS_DEST_DIR/$hook_name"
+
+		echo -n "  Installing $hook_name... "
+		cp "$hook_file" "$dest_path"
+		chmod +x "$dest_path"
+		echo "OK"
 	fi
 done
 
