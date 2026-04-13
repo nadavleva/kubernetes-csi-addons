@@ -14,9 +14,9 @@ export PATH="/usr/bin:/bin"  # Remove kind/k3d from path
 # shellcheck disable=SC2034  # IPTABLES_IMAGE is a reference/example for the logic being tested
 IPTABLES_IMAGE="csi-addons/iptables-manager:latest"
 if command -v kind >/dev/null 2>&1 || command -v k3d >/dev/null 2>&1; then
-    echo "✓ Should use custom image (kind/k3d available)"
+	echo "✓ Should use custom image (kind/k3d available)"
 else
-    echo "✓ Should fall back to alpine:3.19 (no kind/k3d)"
+	echo "✓ Should fall back to alpine:3.19 (no kind/k3d)"
 fi
 
 export PATH="$PATH_BACKUP"
@@ -25,37 +25,37 @@ export PATH="$PATH_BACKUP"
 echo ""
 echo "Test 2: Checking cluster support"
 if command -v kind >/dev/null 2>&1; then
-    echo "✓ kind is available - custom images supported"
-    kind get clusters 2>/dev/null || echo "  No kind clusters running"
+	echo "✓ kind is available - custom images supported"
+	kind get clusters 2>/dev/null || echo "  No kind clusters running"
 else
-    echo "✗ kind not available"
+	echo "✗ kind not available"
 fi
 
 if command -v k3d >/dev/null 2>&1; then
-    echo "✓ k3d is available - custom images supported"
-    k3d cluster list 2>/dev/null || echo "  No k3d clusters running"
+	echo "✓ k3d is available - custom images supported"
+	k3d cluster list 2>/dev/null || echo "  No k3d clusters running"
 else
-    echo "✗ k3d not available"
+	echo "✗ k3d not available"
 fi
 
 # Test 3: Image detection
 echo ""
 echo "Test 3: Testing image detection"
 if command -v podman >/dev/null 2>&1; then
-    CONTAINER_CMD="podman"
+	CONTAINER_CMD="podman"
 elif command -v docker >/dev/null 2>&1; then
-    CONTAINER_CMD="docker"
+	CONTAINER_CMD="docker"
 else
-    echo "✗ No container runtime available"
-    exit 1
+	echo "✗ No container runtime available"
+	exit 1
 fi
 
 echo "Using container runtime: $CONTAINER_CMD"
 
 if $CONTAINER_CMD images --format "table {{.Repository}}:{{.Tag}}" | grep -E "(^|/)csi-addons/iptables-manager:latest\$" >/dev/null 2>&1; then
-    echo "✓ Custom iptables image found locally"
+	echo "✓ Custom iptables image found locally"
 else
-    echo "✗ Custom iptables image not found locally"
+	echo "✗ Custom iptables image not found locally"
 fi
 
 echo ""

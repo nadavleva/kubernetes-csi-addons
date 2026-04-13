@@ -23,53 +23,53 @@ log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
 # Cleanup function for a specific context
 cleanup_context() {
-    local context="$1"
-    
-    log_info "Cleaning up old loaders in context: $context"
-    
-    # Check if context is accessible
-    if ! kubectl --context="$context" cluster-info >/dev/null 2>&1; then
-        log_warn "Cannot access cluster context: $context"
-        return 0
-    fi
-    
-    # Delete old DaemonSets
-    log_info "Deleting old iptables-image-loader DaemonSets..."
-    kubectl --context="$context" delete daemonset iptables-image-loader -n kube-system --ignore-not-found=true 2>/dev/null
-    
-    # Wait for DaemonSet to be deleted
-    sleep 2
-    
-    # Delete old ConfigMaps with iptables image tar
-    log_info "Deleting old iptables-image-tar ConfigMaps..."
-    kubectl --context="$context" delete configmap -n kube-system -l 'configmap-type=iptables-image' --ignore-not-found=true 2>/dev/null
-    
-    # Also delete any ConfigMaps that start with iptables-image-tar
-    local cms
-    cms=$(kubectl --context="$context" get configmap -n kube-system -o jsonpath='{.items[?(@.metadata.name=~"^iptables-image-tar")].metadata.name}' 2>/dev/null || true)
-    if [[ -n "$cms" ]]; then
-        log_info "Found old ConfigMaps: $cms"
-        echo "$cms" | xargs -I {} kubectl --context="$context" delete configmap {} -n kube-system 2>/dev/null
-    fi
-    
-    log_success "Cleanup completed for $context"
+	local context="$1"
+	
+	log_info "Cleaning up old loaders in context: $context"
+	
+	# Check if context is accessible
+	if ! kubectl --context="$context" cluster-info >/dev/null 2>&1; then
+	    log_warn "Cannot access cluster context: $context"
+	    return 0
+	fi
+	
+	# Delete old DaemonSets
+	log_info "Deleting old iptables-image-loader DaemonSets..."
+	kubectl --context="$context" delete daemonset iptables-image-loader -n kube-system --ignore-not-found=true 2>/dev/null
+	
+	# Wait for DaemonSet to be deleted
+	sleep 2
+	
+	# Delete old ConfigMaps with iptables image tar
+	log_info "Deleting old iptables-image-tar ConfigMaps..."
+	kubectl --context="$context" delete configmap -n kube-system -l 'configmap-type=iptables-image' --ignore-not-found=true 2>/dev/null
+	
+	# Also delete any ConfigMaps that start with iptables-image-tar
+	local cms
+	cms=$(kubectl --context="$context" get configmap -n kube-system -o jsonpath='{.items[?(@.metadata.name=~"^iptables-image-tar")].metadata.name}' 2>/dev/null || true)
+	if [[ -n "$cms" ]]; then
+	    log_info "Found old ConfigMaps: $cms"
+	    echo "$cms" | xargs -I {} kubectl --context="$context" delete configmap {} -n kube-system 2>/dev/null
+	fi
+	
+	log_success "Cleanup completed for $context"
 }
 
 # Main
 main() {
-    echo
-    log_info "CSI-Addons Iptables Loader Cleanup"
-    log_info "==================================="
-    echo
-    
-    # Cleanup both contexts
-    cleanup_context "$DR1_CONTEXT"
-    echo
-    cleanup_context "$DR2_CONTEXT"
-    
-    echo
-    log_success "✓ Cleanup completed!"
-    echo
+	echo
+	log_info "CSI-Addons Iptables Loader Cleanup"
+	log_info "==================================="
+	echo
+	
+	# Cleanup both contexts
+	cleanup_context "$DR1_CONTEXT"
+	echo
+	cleanup_context "$DR2_CONTEXT"
+	
+	echo
+	log_success "✓ Cleanup completed!"
+	echo
 }
 
 main "$@"

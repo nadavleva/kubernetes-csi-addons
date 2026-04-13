@@ -201,7 +201,7 @@ var _ = Describe("EnableVolumeReplication", func() {
 - **Execution time** (during test run): It blocks execute, By blocks log progress
 
 **FullText generation**:
-```
+```plaintext
 EnableVolumeReplication → L1-E-001: Enable snapshot mode → should create...
 ↑                       ↑                                 ↑
 Outer Describe          Inner Describe                    It block
@@ -211,7 +211,7 @@ Outer Describe          Inner Describe                    It block
 
 ### 4.1 Overall Suite Execution Timeline
 
-```
+```plaintext
 go test ./test/e2e/replication/...
         │
         ▼
@@ -279,7 +279,7 @@ Exit test with results
 
 ### 4.2 Detailed Spec Execution (Single Test Case)
 
-```
+```plaintext
 It("Enable snapshot mode replication", func() {
     // Test body executes here
 })
@@ -336,7 +336,7 @@ It("Enable snapshot mode replication", func() {
 
 ### 4.3 DeferCleanup Execution (LIFO Order)
 
-```
+```plaintext
 During test execution, cleanup functions are registered with DeferCleanup():
 
 It("scenario", func() {
@@ -388,7 +388,7 @@ CLEANUP COMPLETE
 
 ### 4.4 Describe Block Hierarchy
 
-```
+```plaintext
 Root Level
     │
     Describe("Replication E2E", func() {
@@ -429,7 +429,7 @@ Root Level
 ### 4.5 Hook Execution Order (Edge Cases)
 
 **Case 1: Test PASSES**
-```
+```plaintext
 ┌─────────────────────────────────────┐
 │ [1] Spec runs (all By blocks)       │
 │ [2] DeferCleanup handlers (LIFO)    │
@@ -439,7 +439,7 @@ Root Level
 ```
 
 **Case 2: Test FAILS (Expect assertion)**
-```
+```plaintext
 ┌─────────────────────────────────────┐
 │ [1] Spec runs (until Expect fails)  │
 │ [2] DeferCleanup handlers (LIFO)    │
@@ -451,7 +451,7 @@ Root Level
 ```
 
 **Case 3: Test PANICS**
-```
+```plaintext
 ┌─────────────────────────────────────┐
 │ [1] Spec runs (until panic)         │
 │ [2] Panic caught by Ginkgo          │
@@ -518,7 +518,7 @@ It("L1-E-001: Enable snapshot mode", func() {
 ```
 
 **Output**:
-```
+```plaintext
 2026-03-10 10:15:22.123 [SPEC] By: L1-E-001: Create namespace
 2026-03-10 10:15:23.456 [SPEC] By: L1-E-001: Creating PVC
 2026-03-10 10:15:24.789 [SPEC] By: L1-E-001: Creating VolumeReplicationClass
@@ -665,7 +665,7 @@ func DeleteVolumeReplicationWithCleanup(ctx context.Context, k8sClient client.Cl
 
 ### 6.1 Registration Phase (Init Time)
 
-```
+```plaintext
 go test ./test/e2e/replication
         ↓
 Go runtime loads package
@@ -689,7 +689,7 @@ RunSpecs() is called → execution phase begins
 
 ### 6.2 Execution Phase (During Test Run)
 
-```
+```plaintext
 RunSpecs() begins
         ↓
 BeforeSuite() runs once
@@ -793,7 +793,7 @@ It("should validate multiple replication scenarios", func() {
 ```
 
 **Output**:
-```
+```plaintext
 2026-03-10 10:15:22.123 [SPEC] By: Testing: snapshot mode with 1m interval
 2026-03-10 10:15:23.456 [SPEC] By: Testing: journal mode with 5m interval
 2026-03-10 10:15:24.789 [SPEC] By: Testing: invalid mirroring mode
@@ -843,7 +843,7 @@ Logf("[CLEANUP]", "deleting PVC %s/%s", pvc.Namespace, pvc.Name)
 ```
 
 **Output format**:
-```
+```plaintext
 2026-03-10 10:15:22.123 [SETUP] creating Kubernetes client
 2026-03-10 10:15:23.456 [PVC] ns=test-ns name=pvc-1 phase=Bound
 2026-03-10 10:15:24.789 [VR] replicating=true degraded=false

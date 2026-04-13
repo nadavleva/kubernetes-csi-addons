@@ -508,7 +508,7 @@ RBD images created during VolumeReplication test operations can become "dangling
 6. Test cleanup deletes PVCs, which triggers RBD image deletion
 
 **Failure Scenario 1: Secondary PVC Creation Fails**
-```
+```plaintext
 [Primary Cluster]                    [Secondary Cluster]
 PVC created ✅          →  RBD mirror image created ✅
                         →  Secondary PVC creation ❌ (fails mid-operation)
@@ -517,7 +517,7 @@ Result: Orphaned RBD mirror image remains on secondary
 ```
 
 **Failure Scenario 2: Cleanup Incomplete**
-```
+```plaintext
 VR/PVC deletion requested ✅
 PVC finalizers removed ✅
 PVC deleted from K8s ✅
@@ -527,7 +527,7 @@ Result: RBD image persists on storage backend
 ```
 
 **Failure Scenario 3: Test Interrupted (Timeout, Panic, Kill)**
-```
+```plaintext
 Test running...
     ├─ Created resources on both clusters
     ├─ Enabled replication
@@ -744,7 +744,7 @@ fi
    - Compare against RBD image creation/deletion events
 
 3. **Post-suite report:**
-   ```
+```plaintext
    ========================================
    TEST SUITE CLEANUP REPORT
    ========================================

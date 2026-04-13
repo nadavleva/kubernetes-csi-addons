@@ -205,7 +205,7 @@ The project's custom testing framework provides:
 ## Test Organization and Structure
 
 ### Directory Structure
-```
+```plaintext
 ├── internal/
 │   ├── client/
 │   │   ├── fake/                    # Mock implementations
@@ -394,7 +394,7 @@ The local/mock testing setup provides a hybrid architecture that tests **real CS
 
 #### **Current Mock Architecture (What EXISTS)**
 
-```
+```plaintext
 ┌─────────────────┐    ┌──────────────────────┐    ┌─────────────────────┐
 │   Test Code     │    │   CSI-Addons        │    │   Fake gRPC Client │
 │                 │───▶│   Controller         │───▶│   (No Network)      │

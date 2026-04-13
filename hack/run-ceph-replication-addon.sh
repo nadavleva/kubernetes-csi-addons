@@ -167,6 +167,7 @@ export USE_EXISTING_CLUSTER=true
 export GINKGO_NO_COLOR=TRUE
 
 # Test packages: replication controller (against cluster) + client (unit)
+# shellcheck disable=SC2034
 TEST_PACKAGES="./internal/controller/replication.storage/... ./internal/client/..."
 
 REPORT_PREFIX=""
@@ -266,11 +267,13 @@ create_focused_junit_report() {
 	cat > "${focused_junit_file}" << EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <testsuites tests="${total}" failures="${failed}" time="${total_time}">
-    <testsuite name="CSI-Addons Replication" tests="${total}" failures="${failed}" time="${total_time}" timestamp="$(date -Iseconds)">
+	<testsuite name="CSI-Addons Replication" tests="${total}" failures="${failed}" time="${total_time}" timestamp="$(date -Iseconds)">
 EOF
-	cat "${temp_testcases}" >> "${focused_junit_file}"
-	echo "    </testsuite>" >> "${focused_junit_file}"
-	echo "</testsuites>" >> "${focused_junit_file}"
+	{
+		cat "${temp_testcases}"
+		echo "    </testsuite>"
+		echo "</testsuites>"
+	} >> "${focused_junit_file}"
 	rm -f "${temp_testcases}"
 	echo "✓ Focused JUnit report: ${focused_junit_file}"
 	return 0
@@ -309,4 +312,4 @@ if [[ ${EXIT_CODE} -eq 0 ]]; then
 else
 	echo "✗ Tests failed. See log: ${LOG_FILE}"
 fi
-exit ${EXIT_CODE}
+exit "${EXIT_CODE}"

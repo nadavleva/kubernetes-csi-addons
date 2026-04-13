@@ -34,7 +34,7 @@ Runs **shellcheck** and **yamllint** on all staged files before allowing a commi
 - Only checks for linting tools if files of that type are present
 
 **Example output:**
-```
+```plaintext
 Running pre-commit linting checks...
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -58,7 +58,7 @@ All files passed linting!
 ```
 
 **Example when there are errors:**
-```
+```plaintext
 Running pre-commit linting checks...
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

@@ -14,26 +14,26 @@ echo "Setting up git pre-commit hooks..."
 
 # Check if hooks directory exists
 if [ ! -d "$HOOKS_SRC_DIR" ]; then
-    echo "ERROR: Hooks directory not found at $HOOKS_SRC_DIR"
-    exit 1
+	echo "ERROR: Hooks directory not found at $HOOKS_SRC_DIR"
+	exit 1
 fi
 
 if [ ! -d "$HOOKS_DEST_DIR" ]; then
-    echo "ERROR: .git/hooks directory not found. Are you in a git repository?"
-    exit 1
+	echo "ERROR: .git/hooks directory not found. Are you in a git repository?"
+	exit 1
 fi
 
 # Copy and make executable all hook scripts
 for hook_file in "$HOOKS_SRC_DIR"/*; do
-    if [ -f "$hook_file" ]; then
-        hook_name=$(basename "$hook_file")
-        dest_path="$HOOKS_DEST_DIR/$hook_name"
-        
-        echo -n "  Installing $hook_name... "
-        cp "$hook_file" "$dest_path"
-        chmod +x "$dest_path"
-        echo "OK"
-    fi
+	if [ -f "$hook_file" ]; then
+	    hook_name=$(basename "$hook_file")
+	    dest_path="$HOOKS_DEST_DIR/$hook_name"
+	    
+	    echo -n "  Installing $hook_name... "
+	    cp "$hook_file" "$dest_path"
+	    chmod +x "$dest_path"
+	    echo "OK"
+	fi
 done
 
 echo ""

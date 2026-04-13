@@ -381,7 +381,7 @@ The E2E tests verify **CSI driver compliance** by asserting on **Kubernetes API 
 
 **Example: EnableVolumeReplication Test Flow**
 
-```
+```plaintext
 1. Test Setup (Pure Kubernetes APIs)
    - Create PVC with specific properties
    - Create VolumeReplication CR with EnableVolumeReplication spec
@@ -479,7 +479,7 @@ Existing unit tests remain in their original locations:
 
 All 6 VolumeReplication APIs have comprehensive E2E coverage in isolated test suite:
 
-```
+```plaintext
 test/e2e/replication/
 ├── enable_volumereplication_test.go       ← EnableVolumeReplication (9/9 scenarios)
 ├── disable_volumereplication_test.go      ← DisableVolumeReplication (10/10 scenarios)
@@ -498,7 +498,7 @@ VolumeGroupReplication APIs will be tested in separate suite for:
 - Resource isolation (requires multi-volume setup)
 - Independent scheduling in CI/CD pipelines
 
-```
+```plaintext
 test/e2e/volumegroupreplication/          ← Planned (Phase 2)
 ├── enable_volumegroupreplication_test.go
 ├── disable_volumegroupreplication_test.go
