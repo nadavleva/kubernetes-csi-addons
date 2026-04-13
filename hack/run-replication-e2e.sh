@@ -249,14 +249,15 @@ prepare_iptables_image() {
 			echo "  Checking if custom iptables image needs to be built..."
 			if ! $CONTAINER_CMD images --format "table {{.Repository}}:{{.Tag}}" | grep -E "(^|/)csi-addons/iptables-manager:latest\$" >/dev/null 2>&1; then
 				echo "  Building custom iptables image..."
-				if [[ -f "${REPO_ROOT}/build/Containerfile.iptables" ]]; then
-					if $CONTAINER_CMD build -t "csi-addons/iptables-manager:latest" -f "${REPO_ROOT}/build/Containerfile.iptables" "${REPO_ROOT}/build/" >/dev/null 2>&1; then
+				E2E_IPTABLES_DIR="${REPO_ROOT}/test/e2e/utils"
+				if [[ -f "${E2E_IPTABLES_DIR}/Containerfile.iptables" ]]; then
+					if $CONTAINER_CMD build -t "csi-addons/iptables-manager:latest" -f "${E2E_IPTABLES_DIR}/Containerfile.iptables" "${E2E_IPTABLES_DIR}" >/dev/null 2>&1; then
 						echo "  ✓ Successfully built custom iptables image"
 					else
 						echo "  WARNING: Failed to build custom iptables image, will attempt to use existing"
 					fi
 				else
-					echo "  WARNING: Containerfile.iptables not found, will attempt to use existing image"
+					echo "  WARNING: Containerfile.iptables not found under test/e2e/utils, will attempt to use existing image"
 				fi
 			else
 				echo "  ✓ Custom iptables image already exists locally"
