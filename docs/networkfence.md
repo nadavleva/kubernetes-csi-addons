@@ -43,7 +43,6 @@ spec:
 
 > **Note**: Creation of a NetworkFence CR blocks access to the corresponding CIDR block. To unblock, set `spec.fenceState: Unfenced`.
 
-
 To unfence the CIDRs, update the `fenceState` field to `Unfenced`:
 
 ```yaml

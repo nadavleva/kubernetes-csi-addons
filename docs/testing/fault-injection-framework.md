@@ -39,17 +39,20 @@ type PeerFenceProvider interface {
 ### 2. Provider Implementations
 
 #### IptablesFaultProvider
+
 - Uses privileged DaemonSets with NET_ADMIN capabilities
 - Creates iptables rules to block traffic to specific CIDRs
 - Manages rules via ConfigMaps that are mounted and monitored by DaemonSet pods
 - Requires cluster support for privileged containers
 
 #### NetworkFenceFaultProvider
+
 - Uses the existing NetworkFence CRDs (NetworkFence, NetworkFenceClass)
 - Integrates with CSIAddonsNode capabilities detection
 - Provides backward compatibility with existing NetworkFence functionality
 
 #### NoOpFaultProvider
+
 - Default fallback provider when no specific backend is configured
 - Always reports success but performs no actual operations
 - Useful for testing the framework itself or when fault injection is not needed
@@ -57,6 +60,7 @@ type PeerFenceProvider interface {
 ### 3. Factory Function
 
 The `NewFaultInjectionProvider()` function creates the appropriate provider based on:
+
 - Environment variable `E2E_FAULT_INJECTOR` (iptables|networkfence|none)
 - Cluster capabilities (privileged DaemonSets, NetworkFence support)
 - Automatic fallback to NoOp provider if specified backend is unsupported
@@ -143,11 +147,13 @@ var _ = AfterSuite(func() {
 The framework automatically detects cluster capabilities:
 
 ### For Iptables Provider
+
 - Tests ability to create privileged DaemonSets with NET_ADMIN capabilities
 - Verifies security policies allow privileged containers
 - Checks for required node operating system support
 
 ### For NetworkFence Provider
+
 - Examines CSIAddonsNode resources for NetworkFence capability
 - Validates NetworkFence CRDs are installed
 - Confirms CSI-Addons controller is available
@@ -157,12 +163,14 @@ The framework automatically detects cluster capabilities:
 ### Iptables Provider Technical Details
 
 1. **DaemonSet Creation**: Creates a privileged DaemonSet with:
+
    - `NET_ADMIN` capability for iptables manipulation
    - Host network access
    - Tolerations for all node taints
    - ConfigMap volume mount for rule management
 
 2. **Rule Management**: Uses ConfigMaps containing shell scripts that:
+
    - Add/remove iptables rules for OUTPUT chain
    - Use `REJECT --reject-with icmp-host-unreachable` for clean failures
    - Include safety checks (`-C` before `-I`) to avoid duplicate rules
@@ -201,12 +209,14 @@ E2E_FAULT_INJECTOR=none go test ./test/end-to-end/replication/
 ## Security Considerations
 
 ### Iptables Provider
+
 - Requires privileged container capabilities
 - Uses NET_ADMIN for iptables rule manipulation
 - Should only be used in test environments
 - DaemonSet pods have broad network access
 
 ### NetworkFence Provider
+
 - Uses standard RBAC permissions
 - Relies on CSI-Addons controller for actual implementation
 - More suitable for production-like testing environments
@@ -216,11 +226,13 @@ E2E_FAULT_INJECTOR=none go test ./test/end-to-end/replication/
 ### Common Issues
 
 1. **"Provider not supported"**
+
    - Check cluster security policies for privileged containers (iptables)
    - Verify CSI-Addons controller is running (networkfence)
    - Ensure correct environment variable configuration
 
 2. **"DaemonSet creation failed"**
+
    - Check RBAC permissions for test service account
    - Verify node selectors and tolerations
    - Review security context constraints (OpenShift)

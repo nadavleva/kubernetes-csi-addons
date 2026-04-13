@@ -1,10 +1,13 @@
 # Ginkgo v2 Test Flow and Execution Guide
 
+<!-- markdownlint-disable MD010 -->
+
 This document explains how the Ginkgo v2 test framework is used in the CSI-Addons replication end-to-end test suite, covering test structure, execution flow, lifecycle management, and cleanup patterns.
 
 ## 1. Overview
 
 **Ginkgo v2** is a mature BDD (Behavior-Driven Development) testing framework for Go that provides:
+
 - Expressive test organization with nested contexts
 - Flexible lifecycle hooks (BeforeSuite, AfterSuite, BeforeEach, AfterEach)
 - Detailed spec reporting with state tracking
@@ -34,6 +37,7 @@ func TestReplicationE2E(t *testing.T) {
 ```
 
 **Purpose**:
+
 - `RegisterFailHandler(Fail)` tells Ginkgo to call `Fail()` when an assertion fails
 - `RunSpecs(t, description)` scans the package for registered `Describe` blocks and executes them
 
@@ -50,6 +54,7 @@ var _ = Describe("EnableVolumeReplication", func() { /* ... */ })
 ```
 
 **Timing**:
+
 1. Go calls `init()` functions → package variables are initialized
 2. Init-time `var _` statements execute → Ginkgo blocks register
 3. `TestReplicationE2E(t)` is called → RunSpecs executes all registered blocks
@@ -84,6 +89,7 @@ var _ = BeforeSuite(func() {
 ```
 
 **Key behaviors**:
+
 - **Failure**: If BeforeSuite fails, entire suite is skipped
 - **Skip**: If Skip() is called, entire suite is skipped (with reason logged)
 - **Isolation**: Each call to `Expect()` can fail and stop BeforeSuite
@@ -102,6 +108,7 @@ var _ = ReportAfterEach(func(report types.SpecReport) {
 ```
 
 **SpecReport fields**:
+
 - `FullText()`: Complete spec path (e.g., "EnableVolumeReplication L1-E-001 Enable snapshot mode")
 - `State`: Enum (Passed, Failed, Skipped, Pending, Interrupted)
 - `RunTime`: Time from spec start to completion
@@ -197,10 +204,12 @@ var _ = Describe("EnableVolumeReplication", func() {
 ```
 
 **Important distinction**:
+
 - **Init time** (during `go test` startup): Describe blocks execute to register specs
 - **Execution time** (during test run): It blocks execute, By blocks log progress
 
 **FullText generation**:
+
 ```plaintext
 EnableVolumeReplication → L1-E-001: Enable snapshot mode → should create...
 ↑                       ↑                                 ↑
@@ -429,6 +438,7 @@ Root Level
 ### 4.5 Hook Execution Order (Edge Cases)
 
 **Case 1: Test PASSES**
+
 ```plaintext
 ┌─────────────────────────────────────┐
 │ [1] Spec runs (all By blocks)       │
@@ -439,6 +449,7 @@ Root Level
 ```
 
 **Case 2: Test FAILS (Expect assertion)**
+
 ```plaintext
 ┌─────────────────────────────────────┐
 │ [1] Spec runs (until Expect fails)  │
@@ -451,6 +462,7 @@ Root Level
 ```
 
 **Case 3: Test PANICS**
+
 ```plaintext
 ┌─────────────────────────────────────┐
 │ [1] Spec runs (until panic)         │
@@ -518,6 +530,7 @@ It("L1-E-001: Enable snapshot mode", func() {
 ```
 
 **Output**:
+
 ```plaintext
 2026-03-10 10:15:22.123 [SPEC] By: L1-E-001: Create namespace
 2026-03-10 10:15:23.456 [SPEC] By: L1-E-001: Creating PVC
@@ -554,6 +567,7 @@ It("should validate volume replication status", func() {
 ```
 
 **Matchers used in tests**:
+
 - `Equal(value)` - exact equality
 - `ContainElement(matcher)` - array/slice contains matching element
 - `MatchFields(ignoreExtras, fields)` - struct field matching
@@ -611,12 +625,14 @@ It("should create and cleanup volume replication", func() {
 ```
 
 **Key behaviors**:
+
 - **Multiple DeferCleanup calls**: Execute in LIFO order (last registered = first executed)
 - **On failure**: Cleanup still runs even if spec fails
 - **On panic**: Cleanup still runs even if spec panics
 - **Nested contexts**: Each context.Background() is independent
 
 **Cleanup function structure**:
+
 ```go
 DeferCleanup(func() {
 	// Create fresh context for cleanup
@@ -734,6 +750,7 @@ var _ = FDescribe("EnableVolumeReplication", func() {
 ```
 
 **Pattern matching**:
+
 - Regular expression support: `GINKGO_FOCUS="L1-E-00[123]"` matches L1-E-001, L1-E-002, L1-E-003
 - Case sensitive: `GINKGO_FOCUS="enable"` does NOT match "EnableVolumeReplication"
 - Partial match: `GINKGO_FOCUS="E-001"` matches "L1-E-001" anywhere in spec name
@@ -793,6 +810,7 @@ It("should validate multiple replication scenarios", func() {
 ```
 
 **Output**:
+
 ```plaintext
 2026-03-10 10:15:22.123 [SPEC] By: Testing: snapshot mode with 1m interval
 2026-03-10 10:15:23.456 [SPEC] By: Testing: journal mode with 5m interval
@@ -843,6 +861,7 @@ Logf("[CLEANUP]", "deleting PVC %s/%s", pvc.Namespace, pvc.Name)
 ```
 
 **Output format**:
+
 ```plaintext
 2026-03-10 10:15:22.123 [SETUP] creating Kubernetes client
 2026-03-10 10:15:23.456 [PVC] ns=test-ns name=pvc-1 phase=Bound
@@ -852,15 +871,15 @@ Logf("[CLEANUP]", "deleting PVC %s/%s", pvc.Namespace, pvc.Name)
 
 ## 9. Summary Table: Ginkgo Execution Flow
 
-| Phase | When | What | Registrations | Timing |
-|-------|------|------|----------------|--------|
-| **Init** | `go test` startup | Package initialization | var _ = BeforeSuite(), Describe(), It(), DeferCleanup() registered | Synchronous, once |
-| **BeforeSuite** | Before any specs | Cluster setup, client creation | Runs once for entire suite | If fails, skip all specs |
-| **BeforeEach** | Before each spec | Per-test setup | Runs for each It block | If fails, skip that spec |
-| **It (Body)** | During test execution | Test assertions | Test logic | Runs once per spec |
-| **By** | During It execution | Progress logging | Not execution, just logging | Synchronous output |
-| **DeferCleanup** | When spec exits | Cleanup registration (at init time) + cleanup execution (after spec) | Registered during It execution | LIFO order, always runs |
-| **ReportAfterEach** | After each spec | Log progress, metrics | Runs for each spec completion | Has access to SpecReport |
-| **AfterEach** | After each spec | Per-test cleanup | Optional hook | Runs after spec + report |
-| **ReportAfterSuite** | After all specs | Print summary, aggregate metrics | Runs once after all specs | Has access to full Report |
-| **AfterSuite** | After all specs | Final cleanup | Optional hook | If fails, marks suite as failed |
+| Phase                | When                  | What                                                                 | Registrations                                                       | Timing                          |
+| -------------------- | --------------------- | -------------------------------------------------------------------- | ------------------------------------------------------------------- | ------------------------------- |
+| **Init**             | `go test` startup     | Package initialization                                               | var \_ = BeforeSuite(), Describe(), It(), DeferCleanup() registered | Synchronous, once               |
+| **BeforeSuite**      | Before any specs      | Cluster setup, client creation                                       | Runs once for entire suite                                          | If fails, skip all specs        |
+| **BeforeEach**       | Before each spec      | Per-test setup                                                       | Runs for each It block                                              | If fails, skip that spec        |
+| **It (Body)**        | During test execution | Test assertions                                                      | Test logic                                                          | Runs once per spec              |
+| **By**               | During It execution   | Progress logging                                                     | Not execution, just logging                                         | Synchronous output              |
+| **DeferCleanup**     | When spec exits       | Cleanup registration (at init time) + cleanup execution (after spec) | Registered during It execution                                      | LIFO order, always runs         |
+| **ReportAfterEach**  | After each spec       | Log progress, metrics                                                | Runs for each spec completion                                       | Has access to SpecReport        |
+| **AfterEach**        | After each spec       | Per-test cleanup                                                     | Optional hook                                                       | Runs after spec + report        |
+| **ReportAfterSuite** | After all specs       | Print summary, aggregate metrics                                     | Runs once after all specs                                           | Has access to full Report       |
+| **AfterSuite**       | After all specs       | Final cleanup                                                        | Optional hook                                                       | If fails, marks suite as failed |

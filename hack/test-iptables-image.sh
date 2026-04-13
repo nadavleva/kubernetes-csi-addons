@@ -6,9 +6,9 @@ set -e
 echo "Testing iptables image building logic..."
 
 # Detect container command (same logic as Makefile)
-if command -v podman > /dev/null 2>&1; then
+if command -v podman >/dev/null 2>&1; then
 	CONTAINER_CMD="podman"
-elif command -v docker > /dev/null 2>&1; then
+elif command -v docker >/dev/null 2>&1; then
 	CONTAINER_CMD="docker"
 else
 	echo "❌ Neither podman nor docker found"

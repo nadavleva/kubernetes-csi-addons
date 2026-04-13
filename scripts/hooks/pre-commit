@@ -1,6 +1,7 @@
 #!/bin/bash
-# Pre-commit hook: Run shellcheck, yamllint, shfmt, bash -n, and markdownlint on modified files
-# This catches linting issues before they reach the CI pipeline
+# Pre-commit hook: Align with .github/workflows/lint-extras.yaml super-linter:
+# BASH shellcheck, bash -n, SHELL_SHFMT shfmt, yamllint, MARKDOWN markdownlint,
+# MARKDOWN_PRETTIER prettier. NATURAL_LANGUAGE textlint runs in CI only.
 #
 # Installed via: scripts/setup-hooks.sh
 # To bypass: git commit --no-verify
@@ -9,6 +10,11 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+
+# Staged shell scripts: *.sh plus repo hook scripts without a .sh suffix (super-linter lints these as BASH).
+staged_shell_files() {
+	git diff --cached --name-only --diff-filter=ACM | grep -E '\.sh$|^scripts/hooks/pre-commit$' || true
+}
 
 # Colors for output
 RED='\033[0;31m'
@@ -26,91 +32,91 @@ TOOLS_AVAILABLE=0
 # SHELLCHECK - Check if available first, then process shell files
 # ============================================================================
 if command -v shellcheck &>/dev/null; then
-    TOOLS_AVAILABLE=1
-    SHELL_FILES=$(git diff --cached --name-only --diff-filter=ACM | grep '\.sh$' || true)
+	TOOLS_AVAILABLE=1
+	SHELL_FILES=$(staged_shell_files)
 
-    if [ -n "$SHELL_FILES" ]; then
-        echo ""
-        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-        echo "Shellcheck (Shell scripts)"
-        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+	if [ -n "$SHELL_FILES" ]; then
+		echo ""
+		echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+		echo "Shellcheck (Shell scripts)"
+		echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-        SHELL_PASSED=0
-        SHELL_FAILED=0
+		SHELL_PASSED=0
+		SHELL_FAILED=0
 
-        for file in $SHELL_FILES; do
-            if [ -f "$REPO_ROOT/$file" ]; then
-                echo -n "  Checking $file... "
-                if shellcheck "$REPO_ROOT/$file" 2>/dev/null; then
-                    echo -e "${GREEN}Pass${NC}"
-                    ((SHELL_PASSED++))
-                    PASSED_FILES+=("$file")
-                else
-                    echo -e "${RED}FAILED${NC}"
-                    ((SHELL_FAILED++))
-                    FAILED_FILES+=("$file")
-                    # Show the actual errors
-                    shellcheck "$REPO_ROOT/$file" || true
-                fi
-            fi
-        done
+		for file in $SHELL_FILES; do
+			if [ -f "$REPO_ROOT/$file" ]; then
+				echo -n "  Checking $file... "
+				if shellcheck "$REPO_ROOT/$file" 2>/dev/null; then
+					echo -e "${GREEN}Pass${NC}"
+					((SHELL_PASSED++))
+					PASSED_FILES+=("$file")
+				else
+					echo -e "${RED}FAILED${NC}"
+					((SHELL_FAILED++))
+					FAILED_FILES+=("$file")
+					# Show the actual errors
+					shellcheck "$REPO_ROOT/$file" || true
+				fi
+			fi
+		done
 
-        echo "Shellcheck: ${SHELL_PASSED} passed, ${SHELL_FAILED} failed"
-    else
-        echo "No shell scripts to check with shellcheck"
-    fi
+		echo "Shellcheck: ${SHELL_PASSED} passed, ${SHELL_FAILED} failed"
+	else
+		echo "No shell scripts to check with shellcheck"
+	fi
 else
-    echo -e "${YELLOW}WARNING: shellcheck is not installed. Skipping shell script linting.${NC}"
-    echo "  Install with: apt-get install shellcheck (or via your package manager)"
+	echo -e "${YELLOW}WARNING: shellcheck is not installed. Skipping shell script linting.${NC}"
+	echo "  Install with: apt-get install shellcheck (or via your package manager)"
 fi
 
 # ============================================================================
 # YAMLLINT - Check if available first, then process YAML files
 # ============================================================================
 if command -v yamllint &>/dev/null; then
-    TOOLS_AVAILABLE=1
-    YAML_FILES=$(git diff --cached --name-only --diff-filter=ACM | grep -E '\.(yaml|yml)$' || true)
+	TOOLS_AVAILABLE=1
+	YAML_FILES=$(git diff --cached --name-only --diff-filter=ACM | grep -E '\.(yaml|yml)$' || true)
 
-    if [ -n "$YAML_FILES" ]; then
-        echo ""
-        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-        echo "Yamllint (YAML files)"
-        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+	if [ -n "$YAML_FILES" ]; then
+		echo ""
+		echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+		echo "Yamllint (YAML files)"
+		echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-        YAML_PASSED=0
-        YAML_FAILED=0
+		YAML_PASSED=0
+		YAML_FAILED=0
 
-        for file in $YAML_FILES; do
-            if [ -f "$REPO_ROOT/$file" ]; then
-                echo -n "  Checking $file... "
-                if yamllint -c "$REPO_ROOT/.yamllint.yaml" "$REPO_ROOT/$file" >/dev/null 2>&1; then
-                    echo -e "${GREEN}Pass${NC}"
-                    ((YAML_PASSED++))
-                    PASSED_FILES+=("$file")
-                else
-                    echo -e "${RED}FAILED${NC}"
-                    ((YAML_FAILED++))
-                    FAILED_FILES+=("$file")
-                    # Show the actual errors
-                    yamllint -c "$REPO_ROOT/.yamllint.yaml" "$REPO_ROOT/$file" || true
-                fi
-            fi
-        done
+		for file in $YAML_FILES; do
+			if [ -f "$REPO_ROOT/$file" ]; then
+				echo -n "  Checking $file... "
+				if yamllint -c "$REPO_ROOT/.yamllint.yaml" "$REPO_ROOT/$file" >/dev/null 2>&1; then
+					echo -e "${GREEN}Pass${NC}"
+					((YAML_PASSED++))
+					PASSED_FILES+=("$file")
+				else
+					echo -e "${RED}FAILED${NC}"
+					((YAML_FAILED++))
+					FAILED_FILES+=("$file")
+					# Show the actual errors
+					yamllint -c "$REPO_ROOT/.yamllint.yaml" "$REPO_ROOT/$file" || true
+				fi
+			fi
+		done
 
-        echo "Yamllint: ${YAML_PASSED} passed, ${YAML_FAILED} failed"
-    else
-        echo "No YAML files to check with yamllint"
-    fi
+		echo "Yamllint: ${YAML_PASSED} passed, ${YAML_FAILED} failed"
+	else
+		echo "No YAML files to check with yamllint"
+	fi
 else
-    echo -e "${YELLOW}WARNING: yamllint is not installed. Skipping YAML linting.${NC}"
-    echo "  Install with: pip install yamllint (or apt-get install yamllint)"
+	echo -e "${YELLOW}WARNING: yamllint is not installed. Skipping YAML linting.${NC}"
+	echo "  Install with: pip install yamllint (or apt-get install yamllint)"
 fi
 
 # ============================================================================
 # BASH_EXEC - Check if shell scripts are executable (bash -n)
 # ============================================================================
 if command -v bash &>/dev/null; then
-	SHELL_FILES=$(git diff --cached --name-only --diff-filter=ACM | grep '\.sh$' || true)
+	SHELL_FILES=$(staged_shell_files)
 
 	if [ -n "$SHELL_FILES" ]; then
 		echo ""
@@ -145,7 +151,7 @@ fi
 # SHFMT - Check shell script formatting
 # ============================================================================
 if command -v shfmt &>/dev/null; then
-	SHELL_FILES=$(git diff --cached --name-only --diff-filter=ACM | grep '\.sh$' || true)
+	SHELL_FILES=$(staged_shell_files)
 
 	if [ -n "$SHELL_FILES" ]; then
 		echo ""
@@ -220,6 +226,44 @@ else
 fi
 
 # ============================================================================
+# PRETTIER - Markdown formatting (MARKDOWN_PRETTIER in super-linter v7 image)
+# ============================================================================
+if command -v npx &>/dev/null; then
+	TOOLS_AVAILABLE=1
+	MD_FILES=$(git diff --cached --name-only --diff-filter=ACM | grep -E '\.md$' || true)
+
+	if [ -n "$MD_FILES" ]; then
+		echo ""
+		echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+		echo "Prettier (Markdown — same major as super-linter: 3.5.x)"
+		echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+		PRETTIER_PASSED=0
+		PRETTIER_FAILED=0
+
+		for file in $MD_FILES; do
+			if [ -f "$REPO_ROOT/$file" ]; then
+				echo -n "  Checking $file... "
+				if npx --yes prettier@3.5.3 --check "$REPO_ROOT/$file" >/dev/null 2>&1; then
+					echo -e "${GREEN}Pass${NC}"
+					((PRETTIER_PASSED++))
+				else
+					echo -e "${RED}FAILED${NC}"
+					((PRETTIER_FAILED++))
+					FAILED_FILES+=("$file (prettier)")
+					npx --yes prettier@3.5.3 --check "$REPO_ROOT/$file" || true
+				fi
+			fi
+		done
+
+		echo "Prettier: ${PRETTIER_PASSED} passed, ${PRETTIER_FAILED} failed"
+	fi
+else
+	echo -e "${YELLOW}TIP: npx not available. Skipping Prettier Markdown checks.${NC}"
+	echo "     Install Node.js so npx can run prettier@3.5.3 (MARKDOWN_PRETTIER in CI)."
+fi
+
+# ============================================================================
 # SUMMARY AND EXIT
 # ============================================================================
 echo ""
@@ -230,22 +274,22 @@ echo "  Failed: ${#FAILED_FILES[@]}"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 if [ $TOOLS_AVAILABLE -eq 0 ]; then
-    echo -e "${YELLOW}WARNING: No linting tools available (shellcheck and yamllint not found)${NC}"
-    echo "  Allowing commit to proceed without validation"
-    exit 0
+	echo -e "${YELLOW}WARNING: No linting tools found (install shellcheck, yamllint, and/or Node.js for npx/Prettier).${NC}"
+	echo "  Allowing commit to proceed without validation"
+	exit 0
 fi
 
 if [ ${#FAILED_FILES[@]} -gt 0 ]; then
-    echo -e "${RED}BLOCKED: Fix linting errors above and try again${NC}"
-    echo ""
-    echo "Files with errors:"
-    for file in "${FAILED_FILES[@]}"; do
-        echo "  - $file"
-    done
-    echo ""
-    echo "You can bypass this check with: git commit --no-verify"
-    echo "But it's recommended to fix the linting issues first."
-    exit 1
+	echo -e "${RED}BLOCKED: Fix linting errors above and try again${NC}"
+	echo ""
+	echo "Files with errors:"
+	for file in "${FAILED_FILES[@]}"; do
+		echo "  - $file"
+	done
+	echo ""
+	echo "You can bypass this check with: git commit --no-verify"
+	echo "But it's recommended to fix the linting issues first."
+	exit 1
 fi
 
 echo -e "${GREEN}All files passed linting!${NC}"

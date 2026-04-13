@@ -90,11 +90,11 @@ Refer to the [installation guide](docs/deploy-controller.md) for more details.
 
 See [Testing Architecture](docs/testing-architecture.md) for a full overview. Summary of what exists:
 
-| Category | What exists | Notes |
-|----------|-------------|--------|
-| **Unit tests** | Client replication API (enable/disable/promote/demote/resync), controller helpers, PVC annotations | Use fake gRPC clients; no real cluster or CSI driver. |
-| **Controller integration** | Replication Storage Suite, CSI-Addons Suite | Use [envtest](https://pkg.go.dev/sigs.k8s.io/controller-runtime/pkg/envtest) (or real cluster with `USE_EXISTING_CLUSTER=true`). Controllers are exercised with **fake** clients—no real gRPC to sidecars. |
-| **Replication end-to-end** | Layer-1 VR scenarios in `test/end-to-end/replication` | Create VolumeReplication/VolumeReplicationClass on a live cluster; require controller and CSI driver with replication support. See [Replication end-to-end Suite](docs/testing/replication-end-to-end-suite.md). |
+| Category                   | What exists                                                                                        | Notes                                                                                                                                                                                                            |
+| -------------------------- | -------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Unit tests**             | Client replication API (enable/disable/promote/demote/resync), controller helpers, PVC annotations | Use fake gRPC clients; no real cluster or CSI driver.                                                                                                                                                            |
+| **Controller integration** | Replication Storage Suite, CSI-Addons Suite                                                        | Use [envtest](https://pkg.go.dev/sigs.k8s.io/controller-runtime/pkg/envtest) (or real cluster with `USE_EXISTING_CLUSTER=true`). Controllers are exercised with **fake** clients—no real gRPC to sidecars.       |
+| **Replication end-to-end** | Layer-1 VR scenarios in `test/end-to-end/replication`                                              | Create VolumeReplication/VolumeReplicationClass on a live cluster; require controller and CSI driver with replication support. See [Replication end-to-end Suite](docs/testing/replication-end-to-end-suite.md). |
 
 **Run tests:**
 
