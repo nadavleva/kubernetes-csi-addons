@@ -315,9 +315,9 @@ func (p *IptablesFaultProvider) runConnectivityProbeJob(ctx context.Context, tar
 		}
 	}()
 
-	err := wait.PollImmediate(connectivityProbePollInterval, connectivityProbeTimeout, func() (bool, error) {
+	err := wait.PollUntilContextTimeout(ctx, connectivityProbePollInterval, connectivityProbeTimeout, true, func(pollCtx context.Context) (bool, error) {
 		var j batchv1.Job
-		if err := p.config.Client.Get(ctx, jobKey, &j); err != nil {
+		if err := p.config.Client.Get(pollCtx, jobKey, &j); err != nil {
 			return false, fmt.Errorf("get probe job: %w", err)
 		}
 		if j.Status.Succeeded > 0 || j.Status.Failed > 0 {
@@ -914,10 +914,10 @@ func (p *IptablesFaultProvider) renderTemplate(templatePath string, data Templat
 // waitForDaemonSetReady waits for all DaemonSet pods to be ready
 func (p *IptablesFaultProvider) waitForDaemonSetReady(ctx context.Context) error {
 	clusterContext := p.getClusterContext()
-	return wait.PollImmediate(5*time.Second, IptablesReadyTimeout, func() (bool, error) {
+	return wait.PollUntilContextTimeout(ctx, 5*time.Second, IptablesReadyTimeout, true, func(pollCtx context.Context) (bool, error) {
 		// Get DaemonSet status first
 		var ds appsv1.DaemonSet
-		if err := p.config.Client.Get(ctx, client.ObjectKey{
+		if err := p.config.Client.Get(pollCtx, client.ObjectKey{
 			Name:      IptablesDaemonSetName,
 			Namespace: p.dsNamespace,
 		}, &ds); err != nil {
@@ -929,7 +929,7 @@ func (p *IptablesFaultProvider) waitForDaemonSetReady(ctx context.Context) error
 			clusterContext, IptablesDaemonSetName, ds.Status.DesiredNumberScheduled,
 			ds.Status.CurrentNumberScheduled, ds.Status.NumberReady, ds.Status.NumberAvailable)
 
-		pods, err := p.getDaemonSetPods(ctx)
+		pods, err := p.getDaemonSetPods(pollCtx)
 		if err != nil {
 			Logf("[ERROR]", "[%s] Failed to get DaemonSet %s pods: %v", clusterContext, IptablesDaemonSetName, err)
 			return false, err
@@ -1121,7 +1121,8 @@ func (p *IptablesFaultProvider) executeIptablesCommand(ctx context.Context, targ
 		fi
 	`
 
-	if action == "fence" {
+	switch action {
+	case "fence":
 		command = baseCommand + fmt.Sprintf(`
 			echo "[$(date)] Fencing %s (OUTPUT+FORWARD: pod traffic uses FORWARD; host uses OUTPUT)"
 			$IPT_CMD -C OUTPUT -d %s -j REJECT --reject-with icmp-host-unreachable 2>/dev/null || \
@@ -1130,14 +1131,14 @@ func (p *IptablesFaultProvider) executeIptablesCommand(ctx context.Context, targ
 			$IPT_CMD -I FORWARD -d %s -j REJECT --reject-with icmp-host-unreachable
 			echo "[$(date)] Fenced: %s"
 		`, targetCIDR, targetCIDR, targetCIDR, targetCIDR, targetCIDR, targetCIDR)
-	} else if action == "unfence" {
+	case "unfence":
 		command = baseCommand + fmt.Sprintf(`
 			echo "[$(date)] Unfencing %s"
 			$IPT_CMD -D OUTPUT -d %s -j REJECT --reject-with icmp-host-unreachable 2>/dev/null || true
 			$IPT_CMD -D FORWARD -d %s -j REJECT --reject-with icmp-host-unreachable 2>/dev/null || true
 			echo "[$(date)] Unfenced: %s"
 		`, targetCIDR, targetCIDR, targetCIDR, targetCIDR)
-	} else {
+	default:
 		return fmt.Errorf("invalid action: %s", action)
 	}
 

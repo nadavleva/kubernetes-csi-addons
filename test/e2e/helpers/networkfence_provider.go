@@ -322,7 +322,7 @@ func (p *NetworkFenceFaultProvider) Cleanup(ctx context.Context) error {
 				// Try again with finalizer removal
 				retryCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 				nfc := resource.networkFenceClass
-				if nfc.Finalizers != nil && len(nfc.Finalizers) > 0 {
+				if len(nfc.Finalizers) > 0 {
 					nfc.Finalizers = nil
 					if err2 := p.config.Client.Update(retryCtx, nfc); err2 == nil {
 						_ = p.config.Client.Delete(retryCtx, nfc)
@@ -421,8 +421,8 @@ func (p *NetworkFenceFaultProvider) waitForNetworkFenceResult(ctx context.Contex
 
 	Logf("[DEBUG]", "Waiting for NetworkFence %s to reach result %s", nf.Name, expectedResult)
 
-	return wait.PollImmediate(2*time.Second, 120*time.Second, func() (bool, error) {
-		err := p.config.Client.Get(ctx, key, nf)
+	return wait.PollUntilContextTimeout(ctx, 2*time.Second, 120*time.Second, true, func(pollCtx context.Context) (bool, error) {
+		err := p.config.Client.Get(pollCtx, key, nf)
 		if err != nil {
 			Logf("[DEBUG]", "Failed to get NetworkFence %s status while waiting: %v", nf.Name, err)
 			return false, nil // Keep trying
@@ -452,9 +452,8 @@ func (p *NetworkFenceFaultProvider) deleteNetworkFence(ctx context.Context, nf *
 			// Continue anyway - not fatal for deletion
 		} else {
 			// Only wait if update succeeded; use shorter timeout for invalid CIDRs
-			ctx2, cancel := context.WithTimeout(ctx, 30*time.Second)
-			if err := wait.PollImmediate(2*time.Second, 30*time.Second, func() (bool, error) {
-				err := p.config.Client.Get(ctx2, key, nf)
+			if err := wait.PollUntilContextTimeout(ctx, 2*time.Second, 30*time.Second, true, func(pollCtx context.Context) (bool, error) {
+				err := p.config.Client.Get(pollCtx, key, nf)
 				if err != nil {
 					return false, nil // Keep trying
 				}
@@ -463,7 +462,6 @@ func (p *NetworkFenceFaultProvider) deleteNetworkFence(ctx context.Context, nf *
 			}); err != nil {
 				Logf("[WARN]", "NetworkFence %s unfencing timed out or failed - will force delete", nf.Name)
 			}
-			cancel()
 		}
 	}
 
