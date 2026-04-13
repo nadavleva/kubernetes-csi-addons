@@ -1,5 +1,5 @@
 #!/bin/bash
-# Pre-commit hook: Run shellcheck and yamllint on modified files
+# Pre-commit hook: Run shellcheck, yamllint, shfmt, bash -n, and markdownlint on modified files
 # This catches linting issues before they reach the CI pipeline
 #
 # Installed via: scripts/setup-hooks.sh
@@ -104,6 +104,119 @@ if command -v yamllint &>/dev/null; then
 else
     echo -e "${YELLOW}WARNING: yamllint is not installed. Skipping YAML linting.${NC}"
     echo "  Install with: pip install yamllint (or apt-get install yamllint)"
+fi
+
+# ============================================================================
+# BASH_EXEC - Check if shell scripts are executable (bash -n)
+# ============================================================================
+if command -v bash &>/dev/null; then
+	SHELL_FILES=$(git diff --cached --name-only --diff-filter=ACM | grep '\.sh$' || true)
+
+	if [ -n "$SHELL_FILES" ]; then
+		echo ""
+		echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+		echo "Bash Syntax Check (bash -n)"
+		echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+		BASH_PASSED=0
+		BASH_FAILED=0
+
+		for file in $SHELL_FILES; do
+			if [ -f "$REPO_ROOT/$file" ]; then
+				echo -n "  Checking $file... "
+				if bash -n "$REPO_ROOT/$file" 2>/dev/null; then
+					echo -e "${GREEN}Pass${NC}"
+					((BASH_PASSED++))
+				else
+					echo -e "${RED}FAILED${NC}"
+					((BASH_FAILED++))
+					FAILED_FILES+=("$file")
+					# Show the actual errors
+					bash -n "$REPO_ROOT/$file" || true
+				fi
+			fi
+		done
+
+		echo "Bash syntax: ${BASH_PASSED} passed, ${BASH_FAILED} failed"
+	fi
+fi
+
+# ============================================================================
+# SHFMT - Check shell script formatting
+# ============================================================================
+if command -v shfmt &>/dev/null; then
+	SHELL_FILES=$(git diff --cached --name-only --diff-filter=ACM | grep '\.sh$' || true)
+
+	if [ -n "$SHELL_FILES" ]; then
+		echo ""
+		echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+		echo "Shell Formatting (shfmt)"
+		echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+		SHFMT_PASSED=0
+		SHFMT_FAILED=0
+
+		for file in $SHELL_FILES; do
+			if [ -f "$REPO_ROOT/$file" ]; then
+				echo -n "  Checking $file... "
+				# Check if formatting matches expected
+				if shfmt -i 0 -d "$REPO_ROOT/$file" >/dev/null 2>&1; then
+					echo -e "${GREEN}Pass${NC}"
+					((SHFMT_PASSED++))
+				else
+					echo -e "${RED}FAILED${NC}"
+					((SHFMT_FAILED++))
+					FAILED_FILES+=("$file (formatting)")
+					# Show the diff
+					shfmt -i 0 -d "$REPO_ROOT/$file" || true
+				fi
+			fi
+		done
+
+		echo "Shfmt: ${SHFMT_PASSED} passed, ${SHFMT_FAILED} failed"
+	fi
+else
+	echo -e "${YELLOW}TIP: shfmt not installed. Skipping shell formatting checks.${NC}"
+	echo "     Install with: apt-get install shfmt"
+fi
+
+# ============================================================================
+# MARKDOWNLINT - Check markdown formatting
+# ============================================================================
+if command -v markdownlint &>/dev/null; then
+	MD_FILES=$(git diff --cached --name-only --diff-filter=ACM | grep -E '\.md$' || true)
+
+	if [ -n "$MD_FILES" ]; then
+		echo ""
+		echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+		echo "Markdown Linting (markdownlint)"
+		echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+		MD_PASSED=0
+		MD_FAILED=0
+
+		for file in $MD_FILES; do
+			if [ -f "$REPO_ROOT/$file" ]; then
+				echo -n "  Checking $file... "
+				if markdownlint "$REPO_ROOT/$file" >/dev/null 2>&1; then
+					echo -e "${GREEN}Pass${NC}"
+					((MD_PASSED++))
+					PASSED_FILES+=("$file")
+				else
+					echo -e "${RED}FAILED${NC}"
+					((MD_FAILED++))
+					FAILED_FILES+=("$file")
+					# Show the actual errors
+					markdownlint "$REPO_ROOT/$file" || true
+				fi
+			fi
+		done
+
+		echo "Markdownlint: ${MD_PASSED} passed, ${MD_FAILED} failed"
+	fi
+else
+	echo -e "${YELLOW}TIP: markdownlint not installed. Skipping markdown linting.${NC}"
+	echo "     Install with: apt-get install node-markdownlint (or npm install -g markdownlint)"
 fi
 
 # ============================================================================
