@@ -18,7 +18,7 @@ This directory contains utilities and tools specifically for end-to-end testing,
 ### Building Iptables Image
 
 ```bash
-# From repo root:
+# From the project root:
 make -f test/e2e/utils/Makefile.iptables build-iptables-image
 
 # Or directly:
@@ -56,7 +56,7 @@ make -f test/e2e/utils/Makefile.iptables emergency-cleanup
 
 ## Troubleshooting
 
-- **Replication test namespaces / VR / NetworkFence leftovers:** run `./hack/clean-replication-e2e-resources.sh` (or `make clean-replication-e2e`) from the repo root. See `docs/networkfence-troubleshooting.md` for stuck `NetworkFence` resources.
+- **Replication test namespaces / VR / NetworkFence leftovers:** run `./hack/clean-replication-e2e-resources.sh` (or `make clean-replication-e2e`) from the project root. See `docs/networkfence-troubleshooting.md` for stuck `NetworkFence` resources.
 - **Image build path:** the iptables image is defined only under `test/e2e/utils/Containerfile.iptables`. `hack/run-replication-e2e.sh` builds from that path when the default image tag is used and the image is missing locally.
 
 ## Consolidation Notes
