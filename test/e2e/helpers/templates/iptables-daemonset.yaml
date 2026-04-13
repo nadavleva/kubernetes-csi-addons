@@ -1,8 +1,11 @@
+# yamllint disable rule:braces,rule:comments,rule:trailing-spaces
+# This file contains Go template syntax that yamllint cannot parse
+---
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
   name: csi-addons-iptables-manager
-  namespace: {{ .Namespace }}
+  namespace: {{.Namespace}}
   labels:
     app: csi-addons-iptables-manager
     csi-addons.io/component: fault-injection
@@ -20,29 +23,27 @@ spec:
       {{- if .NodeSelector }}
       nodeSelector:
         {{- range $key, $value := .NodeSelector }}
-        {{ $key }}: {{ $value }}
+        {{$key}}: {{$value}}  # yamllint disable-line rule:syntax
         {{- end }}
       {{- end }}
       securityContext:
         runAsUser: 0
       containers:
       - name: iptables-manager
-        image: {{ .Image }}
+        image: {{.Image}}
         imagePullPolicy: Never
         command:
         - sh
         - -c
         - |
           echo 'CSI-Addons Iptables Manager starting...';
-          
           # Test iptables detection using pre-built script
           IPT_CMD=$(detect-iptables)
-          
           if [ -z "$IPT_CMD" ]; then
             echo "ERROR: No working iptables command found"
             exit 1
           fi
-          
+
           echo "Detected iptables command: $IPT_CMD"
           echo "Iptables version:"; "$IPT_CMD" --version
           echo 'Available tools:'; which "$IPT_CMD" ping nc nslookup
@@ -50,7 +51,6 @@ spec:
           echo 'Creating readiness marker...';
           touch /tmp/iptables-ready &&
           echo 'Iptables manager ready for fence operations via kubectl exec';
-          
           # Keep container running for exec commands
           while true; do
             sleep 30
