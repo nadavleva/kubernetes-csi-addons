@@ -24,11 +24,14 @@ chmod +x .Git/hooks/*
 ## Available Hooks
 
 ### pre-commit
-Runs **shellcheck** and **yamllint** on all staged files before allowing a commit.
+Runs **shellcheck**, **yamllint**, **bash -n**, **shfmt**, and **markdownlint** on all staged files before allowing a commit.
 
 **What it does:**
 - Checks all modified/staged shell scripts (`.sh`) with shellcheck
+- Checks all modified/staged shell scripts syntax with bash -n (BASH_EXEC)
+- Checks all modified/staged shell scripts formatting with shfmt (SHELL_SHFMT)
 - Checks all modified/staged YAML files (`.yaml`, `.yml`) with yamllint
+- Checks all modified/staged markdown files (`.md`) with markdownlint
 - Prevents commits if any linting errors are found
 - Shows detailed error messages to help you fix issues
 - Only checks for linting tools if files of that type are present
@@ -110,6 +113,11 @@ Git commit --no-verify -m "WIP: fixing linting issues"
 - `shellcheck` - Shell script linting
 - `yamllint` - YAML file linting
 
+### Optional Tools (Recommended for Full Validation)
+- `shfmt` - Shell script formatting checker
+- `bash` - Shell syntax validator (usually pre-installed)
+- `markdownlint` - Markdown file linting
+
 ### Installing shellcheck
 - **macOS**: `brew install shellcheck`
 - **Ubuntu/Debian**: `apt-get install shellcheck`
@@ -122,6 +130,19 @@ Git commit --no-verify -m "WIP: fixing linting issues"
 - **Fedora/RHEL**: `dnf install yamllint`
 - **Python/pip**: `pip install yamllint`
 - **Other**: See [yamllint on GitHub](https://github.com/adrienverge/yamllint)
+
+### Installing shfmt (Recommended)
+- **macOS**: `brew install shfmt`
+- **Ubuntu/Debian**: `apt-get install shfmt`
+- **Fedora/RHEL**: `dnf install shfmt`
+- **Go**: `go install mvdan.cc/sh/v3/cmd/shfmt@latest`
+
+### Installing markdownlint (Recommended)
+- **Node.js**: `npm install -g markdownlint`
+- **Ubuntu/Debian**: May be available as `node-markdownlint`
+- **Python**: `pip install markdownlint` (or `mdl`)
+
+**Note**: The hook will warn if optional tools are not installed but will still allow commits. It's recommended to install all tools to catch issues locally before they reach the CI pipeline.
 
 If either tool is not installed, the hook will warn but not block commits for that file type.
 
