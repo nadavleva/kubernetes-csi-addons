@@ -201,10 +201,16 @@ if command -v markdownlint &>/dev/null; then
 		MD_PASSED=0
 		MD_FAILED=0
 
+		MARKDOWNLINT_CONFIG="$REPO_ROOT/.markdownlint.yaml"
+		MDLINT=(markdownlint)
+		if [ -f "$MARKDOWNLINT_CONFIG" ]; then
+			MDLINT=(markdownlint -c "$MARKDOWNLINT_CONFIG")
+		fi
+
 		for file in $MD_FILES; do
 			if [ -f "$REPO_ROOT/$file" ]; then
 				echo -n "  Checking $file... "
-				if markdownlint "$REPO_ROOT/$file" >/dev/null 2>&1; then
+				if "${MDLINT[@]}" "$REPO_ROOT/$file" >/dev/null 2>&1; then
 					echo -e "${GREEN}Pass${NC}"
 					((MD_PASSED++))
 					PASSED_FILES+=("$file")
@@ -213,7 +219,7 @@ if command -v markdownlint &>/dev/null; then
 					((MD_FAILED++))
 					FAILED_FILES+=("$file")
 					# Show the actual errors
-					markdownlint "$REPO_ROOT/$file" || true
+					"${MDLINT[@]}" "$REPO_ROOT/$file" || true
 				fi
 			fi
 		done
