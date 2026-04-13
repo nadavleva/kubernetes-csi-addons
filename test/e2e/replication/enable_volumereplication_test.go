@@ -51,7 +51,7 @@ var _ = Describe("EnableVolumeReplication", func() {
 			secretName, secretNs := ReplicationSecretRef(ctx, c, env, nsName)
 			By("Creating PVC and waiting for Bound (poll every 2s, timeout 120s)")
 			pvc := CreatePVC(ctx, c, nsName, "pvc-rep", env.StorageClass, "1Gi", func(p *corev1.PersistentVolumeClaim) {
-				fmt.Fprintf(GinkgoWriter, "  [PVC] %s\n", FormatPVCStatus(p))
+				_, _ = fmt.Fprintf(GinkgoWriter, "  [PVC] %s\n", FormatPVCStatus(p))
 			})
 
 			vrcName := "vrc-snapshot-" + nsName
@@ -72,7 +72,7 @@ var _ = Describe("EnableVolumeReplication", func() {
 
 			By("Waiting for Replicating=True or Completed=True (timeout from REPLICATION_POLL_TIMEOUT)")
 			WaitForVolumeReplicationReplicatingOrCompleted(ctx, c, vr, func(v *replicationv1alpha1.VolumeReplication) {
-				fmt.Fprintf(GinkgoWriter, "  [VR] %s\n", FormatVRStatus(v))
+				_, _ = fmt.Fprintf(GinkgoWriter, "  [VR] %s\n", FormatVRStatus(v))
 			})
 			err := c.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrName}, vr)
 			Expect(err).NotTo(HaveOccurred())
@@ -98,7 +98,7 @@ var _ = Describe("EnableVolumeReplication", func() {
 			secretName, secretNs := ReplicationSecretRef(ctx, c, env, nsName)
 			By("Creating PVC and waiting for Bound (poll every 2s, timeout 120s)")
 			pvc := CreatePVC(ctx, c, nsName, "pvc-journal", env.StorageClass, "1Gi", func(p *corev1.PersistentVolumeClaim) {
-				fmt.Fprintf(GinkgoWriter, "  [PVC] %s\n", FormatPVCStatus(p))
+				_, _ = fmt.Fprintf(GinkgoWriter, "  [PVC] %s\n", FormatPVCStatus(p))
 			})
 
 			vrcName := "vrc-journal-" + nsName
@@ -119,7 +119,7 @@ var _ = Describe("EnableVolumeReplication", func() {
 
 			By("Waiting for Replicating=True or Completed=True (journal may take longer than snapshot)")
 			WaitForVolumeReplicationReplicatingOrCompleted(ctx, c, vr, func(v *replicationv1alpha1.VolumeReplication) {
-				fmt.Fprintf(GinkgoWriter, "  [VR] %s\n", FormatVRStatus(v))
+				_, _ = fmt.Fprintf(GinkgoWriter, "  [VR] %s\n", FormatVRStatus(v))
 			})
 			err := c.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrName}, vr)
 			Expect(err).NotTo(HaveOccurred())
@@ -165,7 +165,7 @@ var _ = Describe("EnableVolumeReplication", func() {
 			secretName, secretNs := ReplicationSecretRef(ctx, c, env, nsName)
 			By("Creating PVC and waiting for Bound")
 			pvc := CreatePVC(ctx, c, nsName, "pvc-fence", env.StorageClass, "1Gi", func(p *corev1.PersistentVolumeClaim) {
-				fmt.Fprintf(GinkgoWriter, "  [PVC] %s\n", FormatPVCStatus(p))
+				_, _ = fmt.Fprintf(GinkgoWriter, "  [PVC] %s\n", FormatPVCStatus(p))
 			})
 
 			vrcName := "vrc-fence-" + nsName
@@ -275,7 +275,7 @@ var _ = Describe("EnableVolumeReplication", func() {
 
 			By("Waiting for controller to retry and EnableVolumeReplication to succeed")
 			WaitForVolumeReplicationReplicatingOrCompleted(ctx, c, vr, func(v *replicationv1alpha1.VolumeReplication) {
-				fmt.Fprintf(GinkgoWriter, "  [VR] %s\n", FormatVRStatus(v))
+				_, _ = fmt.Fprintf(GinkgoWriter, "  [VR] %s\n", FormatVRStatus(v))
 			})
 			err = c.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrName}, vr)
 			Expect(err).NotTo(HaveOccurred())
@@ -301,7 +301,7 @@ var _ = Describe("EnableVolumeReplication", func() {
 			secretName, secretNs := ReplicationSecretRef(ctx, c, env, nsName)
 			By("Creating PVC and waiting for Bound (poll every 2s, timeout 120s)")
 			pvc := CreatePVC(ctx, c, nsName, "pvc-idem", env.StorageClass, "1Gi", func(p *corev1.PersistentVolumeClaim) {
-				fmt.Fprintf(GinkgoWriter, "  [PVC] %s\n", FormatPVCStatus(p))
+				_, _ = fmt.Fprintf(GinkgoWriter, "  [PVC] %s\n", FormatPVCStatus(p))
 			})
 
 			vrcName := "vrc-idem-" + nsName
@@ -314,7 +314,7 @@ var _ = Describe("EnableVolumeReplication", func() {
 
 			By("Waiting for first VR Replicating=True or Completed=True")
 			WaitForVolumeReplicationReplicatingOrCompleted(ctx, c, vr, func(v *replicationv1alpha1.VolumeReplication) {
-				fmt.Fprintf(GinkgoWriter, "  [VR] %s\n", FormatVRStatus(v))
+				_, _ = fmt.Fprintf(GinkgoWriter, "  [VR] %s\n", FormatVRStatus(v))
 			})
 			err := c.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrName}, vr)
 			Expect(err).NotTo(HaveOccurred())
@@ -345,7 +345,7 @@ var _ = Describe("EnableVolumeReplication", func() {
 			// If controller processes it, should reach Completed=True within seconds; if not, controller treats as idempotent no-op.
 			By("Waiting for second VR Replicating=True or Completed=True (up to 20s); if none, require no error (idempotent)")
 			gotSuccess := WaitForVolumeReplicationReplicatingOrCompletedUntil(ctx, c, vr2, 20*time.Second, func(v *replicationv1alpha1.VolumeReplication) {
-				fmt.Fprintf(GinkgoWriter, "  [VR] %s\n", FormatVRStatus(v))
+				_, _ = fmt.Fprintf(GinkgoWriter, "  [VR] %s\n", FormatVRStatus(v))
 			})
 			err = c.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vr2Name}, vr2)
 			Expect(err).NotTo(HaveOccurred())
@@ -372,7 +372,7 @@ var _ = Describe("EnableVolumeReplication", func() {
 			secretName, secretNs := ReplicationSecretRef(ctx, c, env, nsName)
 			By("Creating PVC and waiting for Bound")
 			pvc := CreatePVC(ctx, c, nsName, "pvc-invalid-interval", env.StorageClass, "1Gi", func(p *corev1.PersistentVolumeClaim) {
-				fmt.Fprintf(GinkgoWriter, "  [PVC] %s\n", FormatPVCStatus(p))
+				_, _ = fmt.Fprintf(GinkgoWriter, "  [PVC] %s\n", FormatPVCStatus(p))
 			})
 
 			vrcName := "vrc-invalid-interval-" + nsName
@@ -413,7 +413,7 @@ var _ = Describe("EnableVolumeReplication", func() {
 
 			By("Creating PVC and waiting for Bound")
 			pvc := CreatePVC(ctx, c, nsName, "pvc-bad-secret", env.StorageClass, "1Gi", func(p *corev1.PersistentVolumeClaim) {
-				fmt.Fprintf(GinkgoWriter, "  [PVC] %s\n", FormatPVCStatus(p))
+				_, _ = fmt.Fprintf(GinkgoWriter, "  [PVC] %s\n", FormatPVCStatus(p))
 			})
 
 			// Use non-existent secret (not created in namespace)
@@ -457,7 +457,7 @@ var _ = Describe("EnableVolumeReplication", func() {
 			secretName, secretNs := ReplicationSecretRef(ctx, c, env, nsName)
 			By("Creating PVC and waiting for Bound")
 			pvc := CreatePVC(ctx, c, nsName, "pvc-invalid-mode", env.StorageClass, "1Gi", func(p *corev1.PersistentVolumeClaim) {
-				fmt.Fprintf(GinkgoWriter, "  [PVC] %s\n", FormatPVCStatus(p))
+				_, _ = fmt.Fprintf(GinkgoWriter, "  [PVC] %s\n", FormatPVCStatus(p))
 			})
 
 			vrcName := "vrc-invalid-mode-" + nsName
@@ -499,7 +499,7 @@ var _ = Describe("EnableVolumeReplication", func() {
 			secretName, secretNs := ReplicationSecretRef(ctx, c, env, nsName)
 			By("Creating PVC and waiting for Bound")
 			pvc := CreatePVC(ctx, c, nsName, "pvc-future-start", env.StorageClass, "1Gi", func(p *corev1.PersistentVolumeClaim) {
-				fmt.Fprintf(GinkgoWriter, "  [PVC] %s\n", FormatPVCStatus(p))
+				_, _ = fmt.Fprintf(GinkgoWriter, "  [PVC] %s\n", FormatPVCStatus(p))
 			})
 
 			// schedulingStartTime in RFC3339 format, 30 seconds in the future
@@ -524,7 +524,7 @@ var _ = Describe("EnableVolumeReplication", func() {
 
 			By("Waiting for Replicating=True or Completed=True (driver may ignore schedulingStartTime if unsupported)")
 			WaitForVolumeReplicationReplicatingOrCompleted(ctx, c, vr, func(v *replicationv1alpha1.VolumeReplication) {
-				fmt.Fprintf(GinkgoWriter, "  [VR] %s\n", FormatVRStatus(v))
+				_, _ = fmt.Fprintf(GinkgoWriter, "  [VR] %s\n", FormatVRStatus(v))
 			})
 			err := c.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrName}, vr)
 			Expect(err).NotTo(HaveOccurred())
@@ -549,7 +549,7 @@ var _ = Describe("EnableVolumeReplication", func() {
 			secretName, secretNs := ReplicationSecretRef(ctx, c, env, nsName)
 			By("Creating PVC and waiting for Bound")
 			pvc := CreatePVC(ctx, c, nsName, "pvc-invalid-time", env.StorageClass, "1Gi", func(p *corev1.PersistentVolumeClaim) {
-				fmt.Fprintf(GinkgoWriter, "  [PVC] %s\n", FormatPVCStatus(p))
+				_, _ = fmt.Fprintf(GinkgoWriter, "  [PVC] %s\n", FormatPVCStatus(p))
 			})
 
 			vrcName := "vrc-invalid-time-" + nsName
