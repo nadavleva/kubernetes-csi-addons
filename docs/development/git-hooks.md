@@ -35,36 +35,36 @@ Runs **shellcheck** and **yamllint** on all staged files before allowing a commi
 
 **Example output:**
 ```
-🔍 Running pre-commit linting checks...
+Running pre-commit linting checks...
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Shellcheck (Shell scripts)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  Checking hack/run-replication-e2e.sh... ✓
+  Checking hack/run-replication-e2e.sh... Pass
 Shellcheck: 1 passed, 0 failed
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Yamllint (YAML files)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  Checking config/manager/kustomization.yaml... ✓
+  Checking config/manager/kustomization.yaml... Pass
 Yamllint: 1 passed, 0 failed
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Linting Summary:
-  ✓ Passed: 2
-  ✗ Failed: 0
+  Passed: 2
+  Failed: 0
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-✅ All files passed linting!
+All files passed linting!
 ```
 
 **Example when there are errors:**
 ```
-🔍 Running pre-commit linting checks...
+Running pre-commit linting checks...
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Shellcheck (Shell scripts)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  Checking hack/example.sh... ✗ FAILED
+  Checking hack/example.sh... FAILED
 
 In hack/example.sh line 22:
   local var=$(echo "test")
@@ -74,10 +74,10 @@ Shellcheck: 0 passed, 1 failed
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Linting Summary:
-  ✓ Passed: 0
-  ✗ Failed: 1
+  Passed: 0
+  Failed: 1
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-❌ Commit blocked: Fix linting errors above and try again
+BLOCKED: Commit blocked: Fix linting errors above and try again
 
 Files with errors:
   - hack/example.sh
@@ -101,7 +101,7 @@ git commit --no-verify -m "WIP: fixing linting issues"
 # Then commit again without --no-verify to verify it passes
 ```
 
-**⚠️ Warning**: Using `--no-verify` repeatedly means your code won't be validated locally. Use only when necessary.
+**WARNING**: Using `--no-verify` repeatedly means your code won't be validated locally. Use only when necessary.
 
 ## Requirements
 
@@ -166,7 +166,7 @@ git commit -m "Continue working"
 
 **Verify the hook status:**
 ```bash
-# Check if hook is executable (✓ enabled)
+# Check if hook is executable (enabled)
 ls -la .git/hooks/pre-commit
 # Expected: -rwxr-xr-x (executable)
 
