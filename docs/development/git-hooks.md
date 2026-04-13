@@ -51,7 +51,7 @@ Running pre-commit linting checks...
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Shellcheck (Shell scripts)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  Checking hack/run-replication-end-to-end.sh... Pass
+  Checking hack/run-replication-e2e.sh... Pass
 Shellcheck: 1 passed, 0 failed
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -167,7 +167,7 @@ To test if your shell scripts pass linting before committing:
 
 ```bash
 # Check a specific file
-shellcheck hack/run-replication-end-to-end.sh
+shellcheck hack/run-replication-e2e.sh
 
 # Check all shell files
 find . -name "*.sh" -type f | xargs shellcheck
