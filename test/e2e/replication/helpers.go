@@ -617,23 +617,63 @@ func WaitForVolumeReplicationInfoWithStatus(ctx context.Context, c client.Client
 
 // RemoveFinalizerFromVR patches the VR to remove the replication finalizer so it can be deleted.
 // Use when the controller is unable to remove it (e.g. driver unreachable).
-func RemoveFinalizerFromVR(ctx context.Context, c client.Client, vr *replicationv1alpha1.VolumeReplication) {
-	if vr == nil {
-		return
-	}
-	key := client.ObjectKeyFromObject(vr)
-	err := c.Get(ctx, key, vr)
+// removeFinalizerWithRetry removes a finalizer from an object with conflict retry logic.
+// It retries up to 3 times if Update fails with 409 Conflict, refetching the object each time.
+// The removeFn callback is responsible for checking and removing the finalizer from the object.
+func removeFinalizerWithRetry(ctx context.Context, c client.Client, obj client.Object, finalizer, objType, namespace, name string, removeFn func()) {
+	key := client.ObjectKeyFromObject(obj)
+	err := c.Get(ctx, key, obj)
 	if err != nil {
 		if errors.IsNotFound(err) {
 			return
 		}
 		Expect(err).NotTo(HaveOccurred())
 	}
-	if !containsString(vr.Finalizers, volumeReplicationFinalizer) {
+
+	// Check if finalizer exists before attempting removal
+	if !containsString(obj.GetFinalizers(), finalizer) {
 		return
 	}
-	vr.Finalizers = removeString(vr.Finalizers, volumeReplicationFinalizer)
-	Expect(c.Update(ctx, vr)).To(Succeed())
+
+	removeFn()
+
+	// Retry on conflict (409) - object may be modified concurrently by controller
+	maxRetries := 3
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		err := c.Update(ctx, obj)
+		if err == nil {
+			return // Success
+		}
+		if errors.IsConflict(err) && attempt < maxRetries-1 {
+			// Object was modified concurrently, refetch and retry
+			Logf("[CLEANUP]", "Conflict updating %s finalizer (attempt %d/%d), refetching: %s/%s", objType, attempt+1, maxRetries, namespace, name)
+			getErr := c.Get(ctx, key, obj)
+			if getErr != nil {
+				if errors.IsNotFound(getErr) {
+					return // Object was deleted, no need to remove finalizer
+				}
+				Expect(getErr).NotTo(HaveOccurred())
+			}
+			// Check if finalizer is still present
+			if !containsString(obj.GetFinalizers(), finalizer) {
+				return // Already removed
+			}
+			// Remove finalizer again before retry
+			removeFn()
+			continue
+		}
+		// Non-conflict error or max retries reached
+		Expect(err).NotTo(HaveOccurred())
+	}
+}
+
+func RemoveFinalizerFromVR(ctx context.Context, c client.Client, vr *replicationv1alpha1.VolumeReplication) {
+	if vr == nil {
+		return
+	}
+	removeFinalizerWithRetry(ctx, c, vr, volumeReplicationFinalizer, "VolumeReplication", vr.Namespace, vr.Name, func() {
+		vr.Finalizers = removeString(vr.Finalizers, volumeReplicationFinalizer)
+	})
 }
 
 // RemoveFinalizerFromPVC patches the PVC to remove the replication finalizer so it can be deleted.
@@ -641,19 +681,9 @@ func RemoveFinalizerFromPVC(ctx context.Context, c client.Client, pvc *corev1.Pe
 	if pvc == nil {
 		return
 	}
-	key := client.ObjectKeyFromObject(pvc)
-	err := c.Get(ctx, key, pvc)
-	if err != nil {
-		if errors.IsNotFound(err) {
-			return
-		}
-		Expect(err).NotTo(HaveOccurred())
-	}
-	if !containsString(pvc.Finalizers, pvcReplicationFinalizer) {
-		return
-	}
-	pvc.Finalizers = removeString(pvc.Finalizers, pvcReplicationFinalizer)
-	Expect(c.Update(ctx, pvc)).To(Succeed())
+	removeFinalizerWithRetry(ctx, c, pvc, pvcReplicationFinalizer, "PersistentVolumeClaim", pvc.Namespace, pvc.Name, func() {
+		pvc.Finalizers = removeString(pvc.Finalizers, pvcReplicationFinalizer)
+	})
 }
 
 func containsString(slice []string, s string) bool {
@@ -1403,19 +1433,9 @@ func RemoveFinalizerFromNetworkFence(ctx context.Context, c client.Client, nf *c
 	if nf == nil {
 		return
 	}
-	key := client.ObjectKeyFromObject(nf)
-	err := c.Get(ctx, key, nf)
-	if err != nil {
-		if errors.IsNotFound(err) {
-			return
-		}
-		Expect(err).NotTo(HaveOccurred())
-	}
-	if !containsString(nf.Finalizers, networkFenceFinalizer) {
-		return
-	}
-	nf.Finalizers = removeString(nf.Finalizers, networkFenceFinalizer)
-	Expect(c.Update(ctx, nf)).To(Succeed())
+	removeFinalizerWithRetry(ctx, c, nf, networkFenceFinalizer, "NetworkFence", nf.Namespace, nf.Name, func() {
+		nf.Finalizers = removeString(nf.Finalizers, networkFenceFinalizer)
+	})
 }
 
 // logVRState logs comprehensive state information about a VolumeReplication resource in CRD format
@@ -1593,19 +1613,9 @@ func RemoveFinalizerFromNetworkFenceClass(ctx context.Context, c client.Client, 
 	if nfc == nil {
 		return
 	}
-	key := client.ObjectKeyFromObject(nfc)
-	err := c.Get(ctx, key, nfc)
-	if err != nil {
-		if errors.IsNotFound(err) {
-			return
-		}
-		Expect(err).NotTo(HaveOccurred())
-	}
-	if !containsString(nfc.Finalizers, networkFenceClassFinalizer) {
-		return
-	}
-	nfc.Finalizers = removeString(nfc.Finalizers, networkFenceClassFinalizer)
-	Expect(c.Update(ctx, nfc)).To(Succeed())
+	removeFinalizerWithRetry(ctx, c, nfc, networkFenceClassFinalizer, "NetworkFenceClass", nfc.Namespace, nfc.Name, func() {
+		nfc.Finalizers = removeString(nfc.Finalizers, networkFenceClassFinalizer)
+	})
 }
 
 // DeleteNetworkFenceClassWithCleanup deletes the NetworkFenceClass, waits for it to be gone, and
