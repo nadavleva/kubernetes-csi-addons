@@ -10,7 +10,7 @@
 
 2. **Capability detection helper** - Created [test/e2e/helpers/daemonset.go](test/e2e/helpers/daemonset.go):
    - `HasPrivilegedDaemonSetSupport()` function that creates/deletes test DaemonSet
-   - Minimal privileged DaemonSet template with NET_ADMIN capabilities  
+   - Minimal privileged DaemonSet template with NET_ADMIN capabilities
    - Timeout and cleanup handling for capability tests
 
 ### Phase 2: Fault Injection Framework
@@ -30,11 +30,11 @@
    - Readiness probes and pod lifecycle management
 
 5. **NetworkFence compatibility** - Created [test/e2e/helpers/networkfence_provider.go](test/e2e/helpers/networkfence_provider.go):
-   - `NetworkFenceFaultProvider` stub for existing CRD-based approach  
+   - `NetworkFenceFaultProvider` stub for existing CRD-based approach
    - Backward compatibility placeholder for existing tests
    - Ready for integration with existing NetworkFence helper functions
 
-### Phase 4: Testing  
+### Phase 4: Testing
 6. **Unit tests** - [test/e2e/helpers/fault_injection_test.go](test/e2e/helpers/fault_injection_test.go), [test/e2e/helpers/connectivity_baseline_test.go](test/e2e/helpers/connectivity_baseline_test.go), and [test/e2e/helpers/iptables_provider_test.go](test/e2e/helpers/iptables_provider_test.go):
    - Provider factory, env parsing, NoOp behavior
    - Connectivity baseline parsing and fence/reachable comparison
@@ -88,7 +88,7 @@ E2E_IPTABLES_CLEANUP_TIMEOUT=30s               # Cleanup timeout
 1. **Command execution**: Current iptables provider uses placeholder implementation
    - Need to implement actual `kubectl exec` for iptables rule management
    - Consider ConfigMap + init container approach for security
-   
+
 2. **NetworkFence integration**: Complete the NetworkFence provider implementation
    - Connect to existing helper functions in `test/e2e/replication/helpers.go`
    - Integrate with `HasNetworkFenceSupport()` detection
@@ -106,7 +106,7 @@ E2E_IPTABLES_CLEANUP_TIMEOUT=30s               # Cleanup timeout
 ## ✅ Validation Status
 
 - ✅ **Compilation**: All code compiles successfully
-- ✅ **Interface compliance**: All providers implement `PeerFenceProvider`  
+- ✅ **Interface compliance**: All providers implement `PeerFenceProvider`
 - ✅ **Environment integration**: Factory respects `E2E_FAULT_INJECTOR` setting
 - ✅ **Capability detection**: Both NetworkFence and privileged DaemonSet detection working
 - ✅ **Test framework**: Ginkgo integration tests pass basic validation
@@ -115,7 +115,7 @@ E2E_IPTABLES_CLEANUP_TIMEOUT=30s               # Cleanup timeout
 ## 🎯 Achievement Summary
 
 Successfully implemented a **vendor-agnostic fault injection framework** that:
-- Provides **pluggable backends** (NetworkFence CRDs vs iptables) 
+- Provides **pluggable backends** (NetworkFence CRDs vs iptables)
 - Enables **graceful test skipping** based on cluster capabilities
 - Maintains **backward compatibility** with existing NetworkFence tests
 - Supports **configurable deployment strategies** via environment variables

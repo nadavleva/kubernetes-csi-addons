@@ -33,7 +33,7 @@ func TestReplicationE2E(t *testing.T) {
 }
 ```
 
-**Purpose**: 
+**Purpose**:
 - `RegisterFailHandler(Fail)` tells Ginkgo to call `Fail()` when an assertion fails
 - `RunSpecs(t, description)` scans the package for registered `Describe` blocks and executes them
 
@@ -76,7 +76,7 @@ var _ = BeforeSuite(func() {
 	// One-time environment detection
 	Logf("[SETUP]", "detecting StorageClass and provisioner")
 	testEnv := GetTestEnv()
-	
+
 	// Detect NetworkFence support once
 	isSupported := HasNetworkFenceSupport(context.Background(), k8sClient, testEnv.Provisioner)
 	networkFenceSupportCached = &isSupported
@@ -126,12 +126,12 @@ var _ = ReportAfterSuite("Replication E2E detailed summary", func(report types.R
 	var passedSpecs, failedSpecs, skippedSpecs []*types.SpecReport
 	for i, spec := range report.SpecReports {
 		fullText := strings.TrimSpace(spec.FullText())
-		
+
 		// Skip lifecycle hooks and internal capability checks
 		if fullText == "" { continue }
 		if strings.Contains(fullText, "[BeforeSuite]") { continue }
 		if strings.Contains(fullText, "[AfterSuite]") { continue }
-		
+
 		if spec.State == types.SpecStatePassed {
 			passedSpecs = append(passedSpecs, &report.SpecReports[i])
 		} else if spec.State == types.SpecStateFailed {
@@ -146,12 +146,12 @@ var _ = ReportAfterSuite("Replication E2E detailed summary", func(report types.R
 	for _, spec := range passedSpecs {
 		fmt.Fprintf(GinkgoWriter, "  [✅] %s (%s)\n", spec.FullText(), spec.RunTime)
 	}
-	
+
 	fmt.Fprintf(GinkgoWriter, "\n=== FAILED (%d) ===\n", len(failedSpecs))
 	for _, spec := range failedSpecs {
 		fmt.Fprintf(GinkgoWriter, "  [❌] %s: %s\n", spec.FullText(), spec.Failure.Message)
 	}
-	
+
 	fmt.Fprintf(GinkgoWriter, "\n=== SKIPPED (%d) ===\n", len(skippedSpecs))
 	for _, spec := range skippedSpecs {
 		fmt.Fprintf(GinkgoWriter, "  [⏭️] %s (%s)\n", spec.FullText(), spec.SkipReason)
@@ -582,13 +582,13 @@ It("should create and cleanup volume replication", func() {
 		cleanupCtx := context.Background()
 		Logf("[CLEANUP]", "deleting VolumeReplication")
 		DeleteVolumeReplicationWithCleanup(cleanupCtx, k8sClient, vr)
-		
+
 		Logf("[CLEANUP]", "deleting VolumeReplicationClass")
 		DeleteVolumeReplicationClassWithCleanup(cleanupCtx, k8sClient, vrc)
-		
+
 		Logf("[CLEANUP]", "deleting PVC")
 		DeletePVCWithCleanup(cleanupCtx, k8sClient, pvc)
-		
+
 		Logf("[CLEANUP]", "deleting namespace")
 		DeleteNamespace(cleanupCtx, k8sClient, ns)
 	})
@@ -621,10 +621,10 @@ It("should create and cleanup volume replication", func() {
 DeferCleanup(func() {
 	// Create fresh context for cleanup
 	cleanupCtx := context.Background()
-	
+
 	// Use helper with logging
 	DeleteVolumeReplicationWithCleanup(cleanupCtx, k8sClient, vr)
-	
+
 	// Continues even if deletion takes time or has errors
 })
 ```
@@ -636,27 +636,27 @@ The test suite provides cleanup helpers that handle timeout and logging:
 ```go
 func DeleteVolumeReplicationWithCleanup(ctx context.Context, k8sClient client.Client, vr *replicationv1alpha1.VolumeReplication) {
 	Logf("[CLEANUP]", "deleting VolumeReplication %s/%s", vr.Namespace, vr.Name)
-	
+
 	// Remove finalizers if present
 	if controllerutil.ContainsFinalizer(vr, "replication.storage.openshift.io/finalizer") {
 		controllerutil.RemoveFinalizer(vr, "replication.storage.openshift.io/finalizer")
 		_ = k8sClient.Update(ctx, vr)
 	}
-	
+
 	// Delete with timeout
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	
+
 	err := k8sClient.Delete(ctx, vr)
 	if err != nil && !errors.IsNotFound(err) {
 		Logf("[CLEANUP]", "error deleting VR: %v (continuing)", err)
 	}
-	
+
 	// Wait for deletion with eventual consistent check
 	Eventually(func() error {
 		return k8sClient.Get(ctx, client.ObjectKey{Namespace: vr.Namespace, Name: vr.Name}, vr)
 	}, 10*time.Second, 500*time.Millisecond).Should(MatchError(errors.IsNotFound))
-	
+
 	Logf("[CLEANUP]", "VolumeReplication deleted successfully")
 }
 ```
@@ -772,15 +772,15 @@ It("should validate multiple replication scenarios", func() {
 
 	for _, tc := range testCases {
 		By(fmt.Sprintf("Testing: %s", tc.name))
-		
+
 		// Create VolumeReplication with test case parameters
 		vrc := CreateVolumeReplicationClass(ctx, k8sClient, "vrc", provisioner, secret, secretNs, tc.mirroringMode)
-		
+
 		// Register cleanup before assertions (so it runs even if assertion fails)
 		DeferCleanup(func() {
 			DeleteVolumeReplicationClassWithCleanup(context.Background(), k8sClient, vrc)
 		})
-		
+
 		// Validate
 		if tc.expectError {
 			Expect(vrc.Spec.MirroringMode).NotTo(Equal("invalid"))
@@ -811,7 +811,7 @@ Describe("EnableVolumeReplication", func() {
 			DeferCleanup(func() {
 				DeleteVolumeReplicationClassWithCleanup(context.Background(), k8sClient, vrc)
 			})
-			
+
 			if tc.expectError {
 				Expect(vrc.Spec.MirroringMode).NotTo(Equal("invalid"))
 			} else {

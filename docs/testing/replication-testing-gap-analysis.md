@@ -30,7 +30,7 @@ This document provides a detailed mapping of existing replication tests, identif
 
 | Function | Replication State | Coverage Area |
 |----------|------------------|---------------|
-| `markVolumeAsPrimary` | Primary | Promotion logic, Force promotion | 
+| `markVolumeAsPrimary` | Primary | Promotion logic, Force promotion |
 | `markVolumeAsSecondary` | Secondary | Demotion logic |
 | `resyncVolume` | Resync | Resync operations |
 | `enableReplication` | All | Initial enable |
@@ -60,7 +60,7 @@ This document provides a detailed mapping of existing replication tests, identif
 |---------------|-----------|----------|-------|
 | `TestVolumeGroupReplication` | VGR Controller | Group workflows, PVC matching | 107-200 |
 
-#### Volume Group Replication Class Tests  
+#### Volume Group Replication Class Tests
 **Location**: [`internal/controller/replication.storage/volumegroupreplicationclass_test.go`](../../internal/controller/replication.storage/volumegroupreplicationclass_test.go)
 
 | Test Function | Component | Coverage | Lines |
@@ -330,7 +330,7 @@ The E2E test suites can validate replication spec compliance across:
 | **Pure Storage** | Pure CSI | FlashArray/FlashBlade | 🏗️ Planned (Phase 2+) |
 | **Other Vendors** | Any CSI with replication support | Any supported backend | 🏗️ Community contributions |
 
-**Testing Model**: 
+**Testing Model**:
 - Tests define *what* should happen (Kubernetes API state changes) per Layer-1 spec
 - Tests do NOT prescribe *how* vendors implement it internally
 - Vendors can have different storage mechanics but must meet the same API contract
@@ -396,7 +396,7 @@ The E2E tests verify **CSI driver compliance** by asserting on **Kubernetes API 
    - Assert no error conditions
    - Assert VolumeReplicationContent created with correct volumeName
    - Validate via CSI GetReplicationStatus() if available
-   
+
 Result: ✅ Spec Compliant - Driver behaves per Layer-1 requirements
         ❌ Non-Compliant - Driver violates spec expectations
 ```
@@ -418,7 +418,7 @@ Each test validates the same **Kubernetes API contracts** regardless of vendor:
 
 **Vendor Differentiation** (Internal, not tested):
 - RBD: Uses `rbd mirror` commands
-- NetApp: Uses SnapMirror protocol  
+- NetApp: Uses SnapMirror protocol
 - Pure: Uses native replication API
 - **→ All produce the same Kubernetes API state ✅**
 

@@ -10,7 +10,7 @@ This document summarizes the comprehensive fault injection framework implemented
 - Implemented IptablesFaultProvider that uses privileged DaemonSets instead of NetworkFence CRDs
 - Framework supports multiple backends including direct iptables manipulation
 
-✅ **"Add fencing capabilities using iptables for blocking ips for peer or even pod addresses"**  
+✅ **"Add fencing capabilities using iptables for blocking ips for peer or even pod addresses"**
 - Complete iptables rule management via ConfigMaps and DaemonSet monitoring
 - Supports any CIDR format including single IPs (/32) and broader ranges
 - Uses `iptables OUTPUT -j REJECT` with proper ICMP unreachable responses

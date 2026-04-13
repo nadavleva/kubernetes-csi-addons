@@ -18,19 +18,19 @@ The core interface that all fault injection backends must implement:
 type PeerFenceProvider interface {
     // FenceIP blocks network access to the specified CIDR
     FenceIP(ctx context.Context, targetCIDR string, params map[string]string) error
-    
+
     // UnfenceIP restores network access to the specified CIDR
     UnfenceIP(ctx context.Context, targetCIDR string, params map[string]string) error
-    
+
     // VerifyConnectivity tests connectivity to the target and verifies the expected state
     VerifyConnectivity(ctx context.Context, targetCIDR string, expectedFenced bool) (bool, error)
-    
+
     // IsSupported returns true if this fault injection mechanism is available in the cluster
     IsSupported(ctx context.Context) bool
-    
+
     // GetProviderType returns the type of this provider
     GetProviderType() FaultInjectorType
-    
+
     // Cleanup removes all resources created by this provider
     Cleanup(ctx context.Context) error
 }
@@ -44,7 +44,7 @@ type PeerFenceProvider interface {
 - Manages rules via ConfigMaps that are mounted and monitored by DaemonSet pods
 - Requires cluster support for privileged containers
 
-#### NetworkFenceFaultProvider  
+#### NetworkFenceFaultProvider
 - Uses the existing NetworkFence CRDs (NetworkFence, NetworkFenceClass)
 - Integrates with CSIAddonsNode capabilities detection
 - Provides backward compatibility with existing NetworkFence functionality
@@ -147,7 +147,7 @@ The framework automatically detects cluster capabilities:
 - Verifies security policies allow privileged containers
 - Checks for required node operating system support
 
-### For NetworkFence Provider  
+### For NetworkFence Provider
 - Examines CSIAddonsNode resources for NetworkFence capability
 - Validates NetworkFence CRDs are installed
 - Confirms CSI-Addons controller is available
@@ -202,7 +202,7 @@ E2E_FAULT_INJECTOR=none go test ./test/e2e/replication/
 
 ### Iptables Provider
 - Requires privileged container capabilities
-- Uses NET_ADMIN for iptables rule manipulation  
+- Uses NET_ADMIN for iptables rule manipulation
 - Should only be used in test environments
 - DaemonSet pods have broad network access
 

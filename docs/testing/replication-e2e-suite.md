@@ -249,7 +249,7 @@ REPLICATION_SECRET_NAME=rook-csi-rbd-provisioner REPLICATION_SECRET_NAMESPACE=ro
 - **L1-PROM-004:** [Issue #7 - RBD mirror force promote fails when degraded](https://github.com/nadavleva/kubernetes-csi-addons/issues/7)
   - **Problem**: VR state remains Secondary instead of transitioning to Primary when RBD mirror is degraded
   - **Status**: Awaiting RBD driver fix or workaround
-  
+
 - **L1-PROM-005, L1-PROM-006:** [Issue #9 - Array unreachability simulation via iptables](https://github.com/nadavleva/kubernetes-csi-addons/issues/9)
   - **Problem**: Test infrastructure cannot simulate local storage array becoming unreachable
   - **Solution approach**: Block iptables rules on CSI client nodes to simulate storage array unavailability
@@ -512,7 +512,7 @@ RBD images created during VolumeReplication test operations can become "dangling
 [Primary Cluster]                    [Secondary Cluster]
 PVC created ✅          →  RBD mirror image created ✅
                         →  Secondary PVC creation ❌ (fails mid-operation)
-                        
+
 Result: Orphaned RBD mirror image remains on secondary
 ```
 
@@ -534,7 +534,7 @@ Test running...
     ├─ Created secondary PVC from mirror
     │
     └─ INTERRUPTED (timeout, panic, or ^C)
-    
+
 Cleanup handler runs but may not complete fully
 Result: Partial cleanup, dangling images remain
 ```
@@ -608,7 +608,7 @@ rbd info --pool <pool-name> <image> | grep 'create_timestamp'
    ```bash
    # Record RBD images after test cleanup
    rbd ls --pool <pool> > images_after.txt
-   
+
    # Identify dangling images (present after, but created during test)
    comm -13 images_before.txt images_after.txt > dangling_images.txt
    ```
@@ -662,7 +662,7 @@ if [ -z "$DANGLING" ]; then
 else
   echo "⚠️  WARNING: Found dangling images:"
   echo "$DANGLING"
-  
+
   # 5. Force cleanup dangling images
   echo "[CLEANUP] Removing dangling RBD images..."
   for image in $DANGLING; do
@@ -670,13 +670,13 @@ else
     rbd mirror image disable --force --pool $POOL $image 2>/dev/null || true
     rbd rm --pool $POOL $image || echo "  ❌ Failed to remove $image"
   done
-  
+
   # 6. Validate cleanup
   echo "[VALIDATE] Checking if dangling images were removed..."
   rbd ls --pool $POOL > /tmp/images_final.txt
   REMAINING=$(comm -23 /tmp/images_final.txt /tmp/images_pre_cleanup.txt | \
               grep -E 'pvc-|vr-' || true)
-  
+
   if [ -z "$REMAINING" ]; then
     echo "✅ All dangling images cleaned up"
   else
@@ -695,7 +695,7 @@ fi
    ```bash
    # Each test run gets a unique suffix
    RUN_ID=$(date +%s)_$(openssl rand -hex 4)
-   
+
    # PVCs, VRs use RUN_ID: pvc-$RUN_ID-001, vr-$RUN_ID-001
    ```
 
@@ -705,10 +705,10 @@ fi
    test_cleanup() {
      local namespace=$1
      local run_id=$2
-     
+
      # Delete K8s resources
      kubectl delete namespace $namespace
-     
+
      # Check for orphaned images with this run_id
      local orphaned=$(rbd ls --pool $POOL | grep $run_id || true)
      if [ -n "$orphaned" ]; then
@@ -752,7 +752,7 @@ fi
    RBD Images Deleted:        116
    Dangling Images:           4
    Orphaned Storage:          8 GiB
-   
+
    Dangling images:
    - pvc-abc123-001 (224 MiB, 2h old)
    - mirror-xyz789-001 (1.5 GiB, 1h old)
@@ -801,13 +801,13 @@ If either call fails (e.g. sidecar unreachable, driver error, or no CSIAddonsNod
 
 **What to check when State stays Unknown:**
 
-- **Controller and VRs in the same cluster**  
+- **Controller and VRs in the same cluster**
   The CSI-Addons controller only reconciles VRs in the cluster where it runs. If VRs are created in cluster A but the controller runs in cluster B, those VRs are never reconciled and State is never set.
-- **VRC provisioner must match CSIAddonsNode driver name**  
+- **VRC provisioner must match CSIAddonsNode driver name**
   The controller looks up a CSIAddonsNode whose `spec.driver.name` **exactly** matches the VolumeReplicationClass `spec.provisioner`. If they differ (e.g. VRC uses `rook-ceph.rbd.csi.ceph.com` but CSIAddonsNode uses `rbd.csi.ceph.com`), the controller never finds a connection and State stays Unknown. The e2e tests default the VRC provisioner to `rook-ceph.rbd.csi.ceph.com`; set env **`CSI_PROVISIONER`** to match your CSIAddonsNode driver name when running the suite (and when creating VRCs manually).
-- **CSIAddonsNode exists and supports VolumeReplication**  
+- **CSIAddonsNode exists and supports VolumeReplication**
   If there is no CSIAddonsNode for the provisioner, or it does not advertise VolumeReplication, the controller cannot call the driver.
-- **Controller logs**  
+- **Controller logs**
   Look for errors like “failed to enable replication”, “failed to promote volume”, or “leading CSIAddonsNode … for driver … does not support VolumeReplication” in the controller pod logs.
 
 **Diagnostic script:** To quickly see provisioner vs driver names and controller errors, run:
