@@ -759,7 +759,7 @@ func (p *IptablesFaultProvider) tryAdoptExistingDaemonSet(ctx context.Context) (
 	return false, nil
 }
 
-// deployDaemonSet creates and deploys the iptables management DaemonSet and ConfigMap
+// deployDaemonSet creates the iptables DaemonSet only (no rules ConfigMap; see IptablesFenceStateConfigMapName for runtime CM).
 func (p *IptablesFaultProvider) deployDaemonSet(ctx context.Context) error {
 	clusterContext := p.getClusterContext()
 
@@ -1422,7 +1422,8 @@ func (p *IptablesFaultProvider) cleanupAllFenceRules(ctx context.Context, ds *ap
 	return nil
 }
 
-// createCleanupJob runs cleanup only by exec into the DaemonSet pod (same as fence/unfence).
+// createCleanupJob runs cleanup by remote exec into the DaemonSet pod (same transport as fence/unfence).
+// Despite the name, this does not create a batch/v1 Job.
 func (p *IptablesFaultProvider) createCleanupJob(ctx context.Context, targetPod *corev1.Pod, command string) error {
 	if p.config.RESTConfig == nil {
 		Logf("[WARNING]", "iptables emergency cleanup skipped for pod %s/%s: RESTConfig is nil", targetPod.Namespace, targetPod.Name)

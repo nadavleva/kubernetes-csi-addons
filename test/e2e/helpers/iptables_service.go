@@ -390,13 +390,14 @@ func loadImageViaKind(image, context string) error {
 	return cmd.Run()
 }
 
-// DeployIptablesServiceWithConfigMap deploys the iptables manager DaemonSet and creates the initial ConfigMap.
-// This enhanced function:
-// 1. Loads the pre-built iptables image to cluster nodes
-// 2. Creates the initial ConfigMap using template rendering
-// 3. Deploys the iptables-manager DaemonSet using template rendering
-// 4. Waits for the DaemonSet to be ready on all nodes
-// This ensures both DaemonSet and ConfigMap are available for fault injection testing.
+// DeployIptablesServiceWithConfigMap deploys the iptables manager DaemonSet (suite bootstrap).
+// It does not create the placeholder rules ConfigMap (templates/iptables-configmap.yaml); fencing never
+// consumes that object. Runtime fence history uses csi-addons-iptables-fence-state, written by IptablesFaultProvider.
+// Steps:
+//  1. Load the pre-built iptables image to cluster nodes when possible
+//  2. Ensure namespace exists
+//  3. Render and create the DaemonSet from templates/iptables-daemonset.yaml
+//  4. Wait until the DaemonSet is ready on all schedulable nodes
 func DeployIptablesServiceWithConfigMap(ctx context.Context, c client.Client, namespace string) error {
 	iptablesImage := DefaultIptablesImageWithRegistry
 
