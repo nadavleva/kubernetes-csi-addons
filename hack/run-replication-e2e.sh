@@ -55,6 +55,7 @@ EXIT_CODE=1
 CLEANUP_ON_EXIT=0
 
 # Run cleanup on exit (success, failure, or panic/timeout) so PVCs/VRs are not left behind.
+# shellcheck disable=SC2317  # Function is called via trap
 run_cleanup_on_exit() {
 	if [[ "$CLEANUP_ON_EXIT" == "1" ]] && [[ -x "$CLEANUP_SCRIPT" ]]; then
 		echo ""
@@ -158,7 +159,8 @@ load_image_to_cluster() {
 	echo "  [DEBUG] Attempting to load image '$image' to context '$context'"
 	
 	# Test if image is accessible first
-	local test_pod="image-test-$(date +%s)"
+	local test_pod
+	test_pod="image-test-$(date +%s)"
 	echo "  [DEBUG] Testing image accessibility in context '$context'"
 	if kubectl --context="$context" run "$test_pod" --image="$image" --restart=Never --rm --timeout=30s --command -- echo "ok" >/dev/null 2>&1; then
 		echo "Image $image already accessible in $context"
@@ -169,7 +171,7 @@ load_image_to_cluster() {
 	# Try to load for kind clusters
 	if command -v kind >/dev/null 2>&1; then
 		local cluster_name="$context"
-		[[ "$context" =~ kind- ]] && cluster_name="$(echo "$context" | sed 's/kind-//')"
+		[[ "$context" =~ kind- ]] && cluster_name="${context#kind-}"
 		
 		if kind get clusters 2>/dev/null | grep -q "^${cluster_name}$"; then
 			echo "Loading via kind to cluster: $cluster_name"
@@ -180,7 +182,7 @@ load_image_to_cluster() {
 	# Try to load for k3d clusters
 	if command -v k3d >/dev/null 2>&1; then
 		local cluster_name="$context"
-		[[ "$context" =~ k3d- ]] && cluster_name="$(echo "$context" | sed 's/k3d-//')"
+		[[ "$context" =~ k3d- ]] && cluster_name="${context#k3d-}"
 		
 		if k3d cluster list 2>/dev/null | grep -q "$cluster_name"; then
 			echo "Loading via k3d to cluster: $cluster_name"
@@ -192,7 +194,7 @@ load_image_to_cluster() {
 	if command -v minikube >/dev/null 2>&1; then
 		local cluster_name="$context"
 		# Extract cluster name from context (remove minikube- prefix if present)
-		[[ "$context" =~ minikube- ]] && cluster_name="$(echo "$context" | sed 's/minikube-//')"
+		[[ "$context" =~ minikube- ]] && cluster_name="${context#minikube-}"
 		
 		echo "  [DEBUG] Checking for minikube profile: '$cluster_name'"
 		if minikube profile list 2>/dev/null | grep -q "^${cluster_name}"; then
@@ -324,6 +326,7 @@ echo ""
 
 # Run tests with extended timeout (default 30m); cleanup runs on EXIT trap even on panic/timeout.
 set +e
+# shellcheck disable=SC2086  # GINKGO_EXTRA intentionally word-split for multiple arguments
 if command -v stdbuf &>/dev/null; then
 	USE_EXISTING_CLUSTER=true stdbuf -oL go test -v -timeout "${REPLICATION_TEST_TIMEOUT}" "${E2E_PKG}" ${GINKGO_EXTRA} "${GINKGO_FOCUS_FLAG[@]}" "${GINKGO_SKIP_FLAG[@]}" 2>&1 | tee "${LOG_FILE}"
 else
