@@ -48,6 +48,8 @@ CLEANUP_SCRIPT="${SCRIPT_DIR}/clean-replication-e2e-resources.sh"
 mkdir -p "${LOGS_DIR}"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 LOG_FILE="${LOGS_DIR}/replication-e2e_${TIMESTAMP}.log"
+# Mirror everything below to the log file. Makefile output (manifests, generate, fmt, vet) runs before this script and appears on the terminal only.
+exec > >(tee -a "${LOG_FILE}") 2>&1
 INSTALL_CRDS="${INSTALL_CRDS:-false}"
 REPLICATION_TEST_TIMEOUT="${REPLICATION_TEST_TIMEOUT:-30m}"
 GINKGO_VERBOSE="${GINKGO_VERBOSE:-v}"
@@ -131,7 +133,20 @@ echo "  CSI_PROVISIONER=${CSI_PROVISIONER:-rook-ceph.rbd.csi.ceph.com}"
 echo "  DR1_CONTEXT=${DR1_CONTEXT:-<unset>}"
 echo "  DR2_CONTEXT=${DR2_CONTEXT:-<unset>}"
 echo "  IPTABLES_IMAGE=${IPTABLES_IMAGE:-csi-addons/iptables-manager:latest}"
-echo "  GINKGO_FOCUS=${GINKGO_FOCUS:-<all>}"
+echo "  GINKGO_VERBOSE=${GINKGO_VERBOSE:-v}"
+echo "  E2E_FAULT_INJECTOR=${E2E_FAULT_INJECTOR:-<default iptables>}"
+echo "  E2E_IPTABLES_IMAGE=(exported before go test; see Full environment after iptables prep)"
+echo "  FENCE_TARGET_SERVICES=${FENCE_TARGET_SERVICES:-<unset>}"
+echo "  FENCE_PEER_SERVICES=${FENCE_PEER_SERVICES:-<unset>}"
+echo "  FENCE_CIDRS=${FENCE_CIDRS:-<unset>}"
+echo "  FENCE_CLUSTER_ID=${FENCE_CLUSTER_ID:-<unset>}"
+echo "  FENCE_AUTO_ENDPOINT_NAMESPACES=${FENCE_AUTO_ENDPOINT_NAMESPACES:-<unset>}"
+echo "  INSTALL_CRDS=${INSTALL_CRDS}"
+echo "  GINKGO_SKIP=${GINKGO_SKIP:-<none>}"
+echo "  E2E_IPTABLES_SKIP_SUITE_DS_RECREATE=${E2E_IPTABLES_SKIP_SUITE_DS_RECREATE:-<unset>}"
+echo "  E2E_IPTABLES_DAEMONSET_NAMESPACE=${E2E_IPTABLES_DAEMONSET_NAMESPACE:-<default csi-addons-system>}"
+echo "  E2E_IPTABLES_DAEMONSET_NAME=${E2E_IPTABLES_DAEMONSET_NAME:-<default csi-addons-iptables-manager>}"
+echo "  USE_EXISTING_CLUSTER=true (set by this script for go test)"
 echo ""
 
 echo "[3/5] Checking VolumeReplication CRD..."
@@ -149,7 +164,16 @@ else
 fi
 echo ""
 
-echo "[3.5/6] Preparing iptables image for fault injection..."
+# Only build/load iptables image when tests use the iptables injector (unset defaults to iptables). Skip for networkfence / none.
+E2E_FAULT_INJECTOR_LOWER="$(printf '%s' "${E2E_FAULT_INJECTOR:-}" | tr '[:upper:]' '[:lower:]')"
+case "${E2E_FAULT_INJECTOR_LOWER}" in
+networkfence | none)
+	echo "[3.5/6] Skipping iptables image build/load (E2E_FAULT_INJECTOR is ${E2E_FAULT_INJECTOR_LOWER})."
+	;;
+*)
+	echo "[3.5/6] Preparing iptables image for fault injection..."
+	;;
+esac
 
 # Simple function to load image to cluster
 load_image_to_cluster() {
@@ -291,11 +315,17 @@ prepare_iptables_image() {
 	export E2E_IPTABLES_IMAGE="$iptables_image"
 }
 
-# Call the image preparation function
-prepare_iptables_image
+# Call the image preparation function when the suite will use iptables fault injection
+case "${E2E_FAULT_INJECTOR_LOWER}" in
+networkfence | none) ;;
+*) prepare_iptables_image ;;
+esac
+echo ""
+echo "[3.75/6] Full environment before go test (sorted; E2E_IPTABLES_IMAGE=${E2E_IPTABLES_IMAGE:-<unset when iptables prep skipped>}):"
+printenv | LC_ALL=C sort
 echo ""
 
-echo "[4/6] Running replication E2E tests (timeout ${REPLICATION_TEST_TIMEOUT}, output tee'd to ${LOG_FILE})..."
+echo "[4/6] Running replication E2E tests (timeout ${REPLICATION_TEST_TIMEOUT}, logging to ${LOG_FILE})..."
 echo "  Use REPLICATION_POLL_TIMEOUT=600 if Replicating=True times out."
 echo "  Use REPLICATION_TEST_TIMEOUT=45m or 60m if suite hits test timeout."
 echo ""
@@ -329,9 +359,9 @@ echo ""
 set +e
 # shellcheck disable=SC2086  # GINKGO_EXTRA intentionally word-split for multiple arguments
 if command -v stdbuf &>/dev/null; then
-	USE_EXISTING_CLUSTER=true stdbuf -oL go test -v -timeout "${REPLICATION_TEST_TIMEOUT}" "${E2E_PKG}" ${GINKGO_EXTRA} "${GINKGO_FOCUS_FLAG[@]}" "${GINKGO_SKIP_FLAG[@]}" 2>&1 | tee "${LOG_FILE}"
+	USE_EXISTING_CLUSTER=true stdbuf -oL go test -v -timeout "${REPLICATION_TEST_TIMEOUT}" "${E2E_PKG}" ${GINKGO_EXTRA} "${GINKGO_FOCUS_FLAG[@]}" "${GINKGO_SKIP_FLAG[@]}" 2>&1
 else
-	USE_EXISTING_CLUSTER=true go test -v -timeout "${REPLICATION_TEST_TIMEOUT}" "${E2E_PKG}" ${GINKGO_EXTRA} "${GINKGO_FOCUS_FLAG[@]}" "${GINKGO_SKIP_FLAG[@]}" 2>&1 | tee "${LOG_FILE}"
+	USE_EXISTING_CLUSTER=true go test -v -timeout "${REPLICATION_TEST_TIMEOUT}" "${E2E_PKG}" ${GINKGO_EXTRA} "${GINKGO_FOCUS_FLAG[@]}" "${GINKGO_SKIP_FLAG[@]}" 2>&1
 fi
 EXIT_CODE="${PIPESTATUS[0]}"
 set -e

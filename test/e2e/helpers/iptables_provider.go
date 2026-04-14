@@ -864,17 +864,9 @@ func (p *IptablesFaultProvider) createIptablesDaemonSet() *appsv1.DaemonSet {
 
 	const templatePath = "templates/iptables-daemonset.yaml"
 	daemonSet := &appsv1.DaemonSet{}
-	Logf("[DEBUG]", "About to render DaemonSet template: %s", templatePath)
 	if err := p.renderTemplate(templatePath, data, daemonSet); err != nil {
 		Logf("[ERROR]", "Failed to render DaemonSet template: %v", err)
 		return daemonSet // Return empty DaemonSet instead of panicking
-	}
-	Logf("[DEBUG]", "Successfully rendered DaemonSet template")
-
-	// Debug: Log the rendered DaemonSet volumes
-	Logf("[DEBUG]", "DaemonSet volumes count: %d", len(daemonSet.Spec.Template.Spec.Volumes))
-	for i, vol := range daemonSet.Spec.Template.Spec.Volumes {
-		Logf("[DEBUG]", "Volume %d: %s", i, vol.Name)
 	}
 
 	return daemonSet
@@ -899,9 +891,6 @@ func (p *IptablesFaultProvider) renderTemplate(templatePath string, data Templat
 	if err := tmpl.Execute(&buf, data); err != nil {
 		return fmt.Errorf("failed to execute template: %w", err)
 	}
-
-	// Debug: Log the rendered YAML content
-	Logf("[DEBUG]", "Rendered template content:\n%s", buf.String())
 
 	// Decode YAML into the object
 	if err := yaml.Unmarshal(buf.Bytes(), obj); err != nil {

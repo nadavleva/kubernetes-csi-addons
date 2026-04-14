@@ -49,11 +49,11 @@ if command -v shellcheck &>/dev/null; then
 				echo -n "  Checking $file... "
 				if shellcheck "$REPO_ROOT/$file" 2>/dev/null; then
 					echo -e "${GREEN}Pass${NC}"
-					((SHELL_PASSED++))
+					((++SHELL_PASSED))
 					PASSED_FILES+=("$file")
 				else
 					echo -e "${RED}FAILED${NC}"
-					((SHELL_FAILED++))
+					((++SHELL_FAILED))
 					FAILED_FILES+=("$file")
 					# Show the actual errors
 					shellcheck "$REPO_ROOT/$file" || true
@@ -100,11 +100,11 @@ if [ "${#YAMLLINT_CMD[@]}" -gt 0 ]; then
 				echo -n "  Checking $file... "
 				if "${YAMLLINT_CMD[@]}" -c "$REPO_ROOT/.yamllint.yaml" "$REPO_ROOT/$file" >/dev/null 2>&1; then
 					echo -e "${GREEN}Pass${NC}"
-					((YAML_PASSED++))
+					((++YAML_PASSED))
 					PASSED_FILES+=("$file")
 				else
 					echo -e "${RED}FAILED${NC}"
-					((YAML_FAILED++))
+					((++YAML_FAILED))
 					FAILED_FILES+=("$file")
 					"${YAMLLINT_CMD[@]}" -c "$REPO_ROOT/.yamllint.yaml" "$REPO_ROOT/$file" || true
 				fi
@@ -140,10 +140,10 @@ if command -v bash &>/dev/null; then
 				echo -n "  Checking $file... "
 				if bash -n "$REPO_ROOT/$file" 2>/dev/null; then
 					echo -e "${GREEN}Pass${NC}"
-					((BASH_PASSED++))
+					((++BASH_PASSED))
 				else
 					echo -e "${RED}FAILED${NC}"
-					((BASH_FAILED++))
+					((++BASH_FAILED))
 					FAILED_FILES+=("$file")
 					# Show the actual errors
 					bash -n "$REPO_ROOT/$file" || true
@@ -176,10 +176,10 @@ if command -v shfmt &>/dev/null; then
 				# Check if formatting matches expected
 				if shfmt -i 0 -d "$REPO_ROOT/$file" >/dev/null 2>&1; then
 					echo -e "${GREEN}Pass${NC}"
-					((SHFMT_PASSED++))
+					((++SHFMT_PASSED))
 				else
 					echo -e "${RED}FAILED${NC}"
-					((SHFMT_FAILED++))
+					((++SHFMT_FAILED))
 					FAILED_FILES+=("$file (formatting)")
 					# Show the diff
 					shfmt -i 0 -d "$REPO_ROOT/$file" || true
@@ -228,11 +228,11 @@ if [ "${#MDLINT_CMD[@]}" -gt 0 ]; then
 				echo -n "  Checking $file... "
 				if "${MDLINT_CMD[@]}" "$REPO_ROOT/$file" >/dev/null 2>&1; then
 					echo -e "${GREEN}Pass${NC}"
-					((MD_PASSED++))
+					((++MD_PASSED))
 					PASSED_FILES+=("$file")
 				else
 					echo -e "${RED}FAILED${NC}"
-					((MD_FAILED++))
+					((++MD_FAILED))
 					FAILED_FILES+=("$file")
 					"${MDLINT_CMD[@]}" "$REPO_ROOT/$file" || true
 				fi
@@ -274,10 +274,10 @@ if command -v npx &>/dev/null; then
 				echo -n "  Checking $file... "
 				if npx --yes prettier@3.5.3 --check "${PRETTIER_IGNORE[@]}" "$REPO_ROOT/$file" >/dev/null 2>&1; then
 					echo -e "${GREEN}Pass${NC}"
-					((PRETTIER_PASSED++))
+					((++PRETTIER_PASSED))
 				else
 					echo -e "${RED}FAILED${NC}"
-					((PRETTIER_FAILED++))
+					((++PRETTIER_FAILED))
 					FAILED_FILES+=("$file (prettier)")
 					npx --yes prettier@3.5.3 --check "${PRETTIER_IGNORE[@]}" "$REPO_ROOT/$file" || true
 				fi

@@ -192,19 +192,23 @@ var _ = BeforeSuite(func() {
 
 	Logf("[SETUP]", "ready")
 
-	// Deploy iptables manager DaemonSet for network fence tests (recreate so pod template matches current suite image)
-	Logf("[SETUP]", "deploying iptables manager DaemonSet for network fence capability (suite start refresh; set %s=true to skip delete/recreate)", helpers.EnvE2EIptablesSkipSuiteDSRecreate)
-	if fullDR {
-		if err := helpers.EnsureFreshSuiteIptablesDaemonSet(context.Background(), k8sClientDR1, "csi-addons-system"); err != nil {
-			Logf("[SETUP]", "WARNING: iptables service deployment to DR1 failed: %v (continuing with tests)", err)
-		}
-		if err := helpers.EnsureFreshSuiteIptablesDaemonSet(context.Background(), k8sClientDR2, "csi-addons-system"); err != nil {
-			Logf("[SETUP]", "WARNING: iptables service deployment to DR2 failed: %v (continuing with tests)", err)
+	// iptables DaemonSet is only for E2E_FAULT_INJECTOR=iptables (or unset → iptables). Skip for networkfence / none.
+	if helpers.GetFaultInjectorTypeFromEnv() == helpers.FaultInjectorIptables {
+		Logf("[SETUP]", "deploying iptables manager DaemonSet for iptables fault injection (suite start refresh; set %s=true to skip delete/recreate)", helpers.EnvE2EIptablesSkipSuiteDSRecreate)
+		if fullDR {
+			if err := helpers.EnsureFreshSuiteIptablesDaemonSet(context.Background(), k8sClientDR1, "csi-addons-system"); err != nil {
+				Logf("[SETUP]", "WARNING: iptables service deployment to DR1 failed: %v (continuing with tests)", err)
+			}
+			if err := helpers.EnsureFreshSuiteIptablesDaemonSet(context.Background(), k8sClientDR2, "csi-addons-system"); err != nil {
+				Logf("[SETUP]", "WARNING: iptables service deployment to DR2 failed: %v (continuing with tests)", err)
+			}
+		} else {
+			if err := helpers.EnsureFreshSuiteIptablesDaemonSet(context.Background(), k8sClient, "csi-addons-system"); err != nil {
+				Logf("[SETUP]", "WARNING: iptables service deployment failed: %v (continuing with tests)", err)
+			}
 		}
 	} else {
-		if err := helpers.EnsureFreshSuiteIptablesDaemonSet(context.Background(), k8sClient, "csi-addons-system"); err != nil {
-			Logf("[SETUP]", "WARNING: iptables service deployment failed: %v (continuing with tests)", err)
-		}
+		Logf("[SETUP]", "skipping iptables manager DaemonSet (E2E_FAULT_INJECTOR=%s)", helpers.GetFaultInjectorTypeFromEnv())
 	}
 
 	// Detect NetworkFence support once at suite level for efficiency
