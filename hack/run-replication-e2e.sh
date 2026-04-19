@@ -320,10 +320,6 @@ case "${E2E_FAULT_INJECTOR_LOWER}" in
 networkfence | none) ;;
 *) prepare_iptables_image ;;
 esac
-echo ""
-echo "[3.75/6] Full environment before go test (sorted; E2E_IPTABLES_IMAGE=${E2E_IPTABLES_IMAGE:-<unset when iptables prep skipped>}):"
-printenv | LC_ALL=C sort
-echo ""
 
 echo "[4/6] Running replication E2E tests (timeout ${REPLICATION_TEST_TIMEOUT}, logging to ${LOG_FILE})..."
 echo "  Use REPLICATION_POLL_TIMEOUT=600 if Replicating=True times out."
