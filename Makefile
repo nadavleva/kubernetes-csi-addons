@@ -161,7 +161,20 @@ test-replication-e2e: manifests generate fmt vet ## Run replication E2E suite ag
 
 .PHONY: clean-replication-e2e
 clean-replication-e2e: ## Remove leftover PVCs, VRs, snapshots and test VRCs from e2e-replication-* namespaces. Run before a fresh E2E run. For dry-run: ./hack/clean-replication-e2e-resources.sh --dry-run
+	@bash ./hack/api-discovery-health-check.sh --fix || true
 	@bash ./hack/clean-replication-e2e-resources.sh
+
+.PHONY: diagnose-api-discovery
+diagnose-api-discovery: ## Diagnose API discovery issues (stale CDI APIs). Run if tests have namespace deletion failures.
+	@bash ./hack/diagnose-api-discovery.sh
+
+.PHONY: diagnose-api-discovery-fix
+diagnose-api-discovery-fix: ## Diagnose and auto-fix API discovery issues. Use before test-replication-e2e if namespaces get stuck.
+	@bash ./hack/diagnose-api-discovery.sh --fix
+
+.PHONY: api-discovery-health-check
+api-discovery-health-check: ## Quick health check for API discovery (useful before running tests).
+	@bash ./hack/api-discovery-health-check.sh
 
 # Iptables fault-injection visibility (replication E2E): same defaults as test/e2e/helpers/iptables_provider.go
 E2E_IPTABLES_DAEMONSET_NAMESPACE ?= csi-addons-system

@@ -101,6 +101,18 @@ remove_pvc_finalizer() {
 	kubectl_ctx "$ctx" patch pvc -n "$ns" "$name" -p '{"metadata":{"finalizers":[]}}' --type=merge 2>/dev/null || true
 }
 
+# Remove finalizers from a namespace so it can be deleted
+# This bypasses API discovery issues (e.g., stale CDI API discovery)
+remove_namespace_finalizers() {
+	local ctx="$1"
+	local ns="$2"
+	if [[ "$DRY_RUN" == "true" ]]; then
+		echo "  [dry-run] would remove finalizers from namespace $ns"
+		return 0
+	fi
+	kubectl_ctx "$ctx" patch namespace "$ns" -p '{"metadata":{"finalizers":[]}}' --type=merge 2>/dev/null || true
+}
+
 echo "=========================================="
 echo "Clean replication E2E resources"
 echo "=========================================="
@@ -146,14 +158,36 @@ for CURRENT_CTX in "${CONTEXTS[@]}"; do
 					fi
 				done
 			fi
-
-			# Delete namespace
-			if [[ "$DRY_RUN" == "true" ]]; then
-				echo "  [dry-run] would delete namespace $ns"
-			else
-				kubectl_ctx "$CURRENT_CTX" delete namespace "$ns" --ignore-not-found --timeout=60s 2>/dev/null || true
-			fi
 		done
+
+		# Delete all namespaces in parallel (non-blocking approach)
+		echo "Deleting ${#NAMESPACES[@]} namespace(s) in parallel..."
+		if [[ "$DRY_RUN" == "true" ]]; then
+			for ns in "${NAMESPACES[@]}"; do
+				echo "  [dry-run] would delete namespace $ns"
+			done
+		else
+			# Remove finalizers from all namespaces first
+			for ns in "${NAMESPACES[@]}"; do
+				(
+					remove_namespace_finalizers "$CURRENT_CTX" "$ns"
+					# Start deletion in background with timeout (don't wait indefinitely)
+					timeout 10 kubectl_ctx "$CURRENT_CTX" delete namespace "$ns" --ignore-not-found --grace-period=0 --force 2>/dev/null || true
+				) &
+			done
+			# Wait for all background deletions with a global timeout (max 60s total)
+			wait_count=0
+			while [[ $(jobs -r -p | wc -l) -gt 0 ]] && [[ $wait_count -lt 120 ]]; do
+				sleep 0.5
+				wait_count=$((wait_count + 1))
+			done
+			# Kill any remaining jobs
+			pids=$(jobs -r -p 2>/dev/null)
+			if [[ -n "$pids" ]]; then
+				kill "$pids" 2>/dev/null || true
+			fi
+			echo "Namespace deletion initiated (cleanup will complete in background)"
+		fi
 	fi
 
 	# 2) VolumeReplicationClasses created by tests (name prefix matches)
