@@ -192,8 +192,10 @@ func (p *IptablesFaultProvider) FenceIP(ctx context.Context, targetCIDR string, 
 
 	// Best-effort: API may be unreachable if the fenced CIDR includes the control-plane node/network.
 	if err := p.syncFenceStateConfigMap(ctx); err != nil {
+		// Don't treat ConfigMap sync failures as fatal - if the API is blocked by the new fence rule, this will likely fail. The important part is that we attempted to record the intended state before applying the fence.
 		Logf("[WARNING]", "post-fence sync fence state ConfigMap (may fail if API path is blocked): %v", err)
 	}
+	// Record event after succesfully applying the fence, ignoring ConfigMap sync errors which may indicate API access issues due to the new fence rule.
 	p.emitIptablesFenceEvent(ctx, EventReasonIptablesFenceApplied, fmt.Sprintf(
 		"Applied OUTPUT+FORWARD REJECT to %s (workload namespace %q). State: kubectl -n %s get configmap %s -o yaml",
 		targetCIDR, p.config.Namespace, p.dsNamespace, IptablesFenceStateConfigMapName))
@@ -226,6 +228,7 @@ func (p *IptablesFaultProvider) UnfenceIP(ctx context.Context, targetCIDR string
 
 	p.removeFromActiveRules(targetCIDR)
 
+	// Record event + ConfigMap after unfencing the API/control-plane node, so API calls succeed.
 	p.emitIptablesFenceEvent(ctx, EventReasonIptablesFenceRemoved, fmt.Sprintf(
 		"Removed OUTPUT+FORWARD REJECT for %s (workload namespace %q)", targetCIDR, p.config.Namespace))
 	if err := p.syncFenceStateConfigMap(ctx); err != nil {
