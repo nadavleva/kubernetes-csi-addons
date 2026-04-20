@@ -195,7 +195,7 @@ func (p *IptablesFaultProvider) FenceIP(ctx context.Context, targetCIDR string, 
 		// Don't treat ConfigMap sync failures as fatal - if the API is blocked by the new fence rule, this will likely fail. The important part is that we attempted to record the intended state before applying the fence.
 		Logf("[WARNING]", "post-fence sync fence state ConfigMap (may fail if API path is blocked): %v", err)
 	}
-	// Record event after succesfully applying the fence, ignoring ConfigMap sync errors which may indicate API access issues due to the new fence rule.
+	// Record event after successfully applying the fence, ignoring ConfigMap sync errors which may indicate API access issues due to the new fence rule.
 	p.emitIptablesFenceEvent(ctx, EventReasonIptablesFenceApplied, fmt.Sprintf(
 		"Applied OUTPUT+FORWARD REJECT to %s (workload namespace %q). State: kubectl -n %s get configmap %s -o yaml",
 		targetCIDR, p.config.Namespace, p.dsNamespace, IptablesFenceStateConfigMapName))
