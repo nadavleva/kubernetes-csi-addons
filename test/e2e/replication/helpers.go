@@ -907,14 +907,16 @@ func CreateNetworkFenceClass(ctx context.Context, c client.Client, name, provisi
 }
 
 // GetFenceCIDRsForFaultInjection returns CIDRs for the iptables fault injector only (not NetworkFence).
-// Order: 1) FENCE_CIDRS, 2) service/backend IPs (Endpoints + EndpointSlice). Raw cluster node InternalIPs are
-// never used as fence targets (avoids blocking the fencing node); use FENCE_CIDRS if you must target a node IP.
+// Order: 1) FENCE_CIDRS env, 2) service/backend IPs (port-aware discovery), 3) auto-discovery from endpoints.
+// Uses GetNodeIPsForFencing for consistency with NetworkFence; GetNodeIPsForFencing excludes raw node
+// InternalIPs from iptables targets (avoids blocking control-plane traffic).
 func GetFenceCIDRsForFaultInjection(ctx context.Context, c client.Client) []string {
 	if cidrs := parseFenceCIDRSFromEnv(); len(cidrs) > 0 {
 		Logf("[DEBUG]", "GetFenceCIDRsForFaultInjection: Using FENCE_CIDRS env: %v", cidrs)
 		return cidrs
 	}
-	Logf("[INFO]", "GetFenceCIDRsForFaultInjection: resolving targets via GetNodeIPsForFencing (iptables: no raw node-IP fence targets)")
+	// Delegate to GetNodeIPsForFencing for consistency with L1-E-003 and NetworkFence.
+	// It tries: 1) FENCE_TARGET_SERVICES service backends, 2) auto-discovered endpoints from default namespaces
 	return GetNodeIPsForFencing(ctx, c)
 }
 
@@ -1222,6 +1224,108 @@ func collectServiceBackendIPs(ctx context.Context, c client.Client, key client.O
 	return ips
 }
 
+// collectServiceBackendIPsWithPorts collects backend IPs and service ports from EndpointSlices.
+// Returns pairs in "IP:port" format (e.g., "192.168.1.10:6800").
+// If EndpointSlice has no ports, returns plain IP (backward compatible).
+func collectServiceBackendIPsWithPorts(ctx context.Context, c client.Client, key client.ObjectKey) []string {
+	sliceList := &discoveryv1.EndpointSliceList{}
+	listOpts := []client.ListOption{
+		client.InNamespace(key.Namespace),
+		client.MatchingLabels{discoveryv1.LabelServiceName: key.Name},
+	}
+	if err := c.List(ctx, sliceList, listOpts...); err != nil {
+		Logf("[DEBUG]", "collectServiceBackendIPsWithPorts: list EndpointSlices %s/%s: %v", key.Namespace, key.Name, err)
+		return nil
+	}
+
+	var result []string
+	seen := make(map[string]struct{})
+
+	for i := range sliceList.Items {
+		slice := &sliceList.Items[i]
+
+		// Get the port from EndpointSlice (if available)
+		var port int32
+		hasPort := false
+		if len(slice.Ports) > 0 && slice.Ports[0].Port != nil {
+			port = *slice.Ports[0].Port
+			hasPort = true
+		}
+
+		// Add endpoints with port info if available
+		for j := range slice.Endpoints {
+			for _, addr := range slice.Endpoints[j].Addresses {
+				if addr == "" {
+					continue
+				}
+
+				var pair string
+				if hasPort {
+					pair = fmt.Sprintf("%s:%d", addr, port)
+				} else {
+					pair = addr
+				}
+
+				if _, ok := seen[pair]; !ok {
+					seen[pair] = struct{}{}
+					result = append(result, pair)
+				}
+			}
+		}
+	}
+
+	return result
+}
+
+// ipPortToCIDR converts "IP:port" or plain IP to "IP/MASK:port" format.
+// Examples: "192.168.1.10:6800" -> "192.168.1.10/32:6800", "192.168.1.10" -> "192.168.1.10/32"
+func ipPortToCIDR(ipPort string) string {
+	// Check if port is present
+	if idx := strings.LastIndex(ipPort, ":"); idx > 0 && ipPort[0:idx] != "[" { // [ipv6]:port case
+		ip := ipPort[0:idx]
+		port := ipPort[idx:] // includes the colon
+		cidr := ipToFenceCIDR(ip)
+		if cidr == "" {
+			return ""
+		}
+		return cidr + port
+	}
+
+	// No port - just convert IP to CIDR
+	return ipToFenceCIDR(ipPort)
+}
+
+// filterEndpointIPsWithPortsToCIDRs filters IP:port pairs, excluding node IPs and converting to "IP/MASK:port" format.
+func filterEndpointIPsWithPortsToCIDRs(ipPorts []string, nodeIPs map[string]struct{}) []string {
+	seen := make(map[string]struct{})
+	var out []string
+	for _, ipPort := range ipPorts {
+		// Extract IP from "IP:port" format
+		ip := ipPort
+		if idx := strings.LastIndex(ipPort, ":"); idx > 0 && ipPort[0:idx] != "[" {
+			ip = ipPort[0:idx]
+		}
+
+		// Skip if IP matches a node InternalIP
+		if _, onNode := nodeIPs[ip]; onNode {
+			Logf("[DEBUG]", "filterEndpointIPsWithPorts: skip %s (IP %s matches node InternalIP — avoids fencing apiserver/kubelet host)", ipPort, ip)
+			continue
+		}
+
+		// Convert to CIDR format
+		cidr := ipPortToCIDR(ipPort)
+		if cidr == "" {
+			continue
+		}
+		if _, ok := seen[cidr]; ok {
+			continue
+		}
+		seen[cidr] = struct{}{}
+		out = append(out, cidr)
+	}
+	return out
+}
+
 func fenceCIDRsFromConfiguredTargetServices(ctx context.Context, c client.Client, nodeIPs map[string]struct{}) []string {
 	keys := parseFenceTargetServicesFromEnv()
 	if len(keys) == 0 {
@@ -1229,13 +1333,23 @@ func fenceCIDRsFromConfiguredTargetServices(ctx context.Context, c client.Client
 	}
 	var merged []string
 	for _, key := range keys {
+		// Try port-aware discovery first
+		ipPorts := collectServiceBackendIPsWithPorts(ctx, c, key)
+		if len(ipPorts) > 0 {
+			Logf("[INFO]", "%s: service %s/%s backend IPs with ports (Endpoints+EndpointSlice): %v", fenceTargetServicesEnv, key.Namespace, key.Name, ipPorts)
+			merged = append(merged, ipPorts...)
+			continue
+		}
+		// Fall back to plain IP discovery if no ports found
 		ips := collectServiceBackendIPs(ctx, c, key)
-		Logf("[INFO]", "%s: service %s/%s backend IPs (Endpoints+EndpointSlice): %v", fenceTargetServicesEnv, key.Namespace, key.Name, ips)
-		merged = append(merged, ips...)
+		if len(ips) > 0 {
+			Logf("[INFO]", "%s: service %s/%s backend IPs (no port info, Endpoints+EndpointSlice): %v", fenceTargetServicesEnv, key.Namespace, key.Name, ips)
+			merged = append(merged, ips...)
+		}
 	}
-	out := filterEndpointIPsToCIDRs(merged, nodeIPs)
+	out := filterEndpointIPsWithPortsToCIDRs(merged, nodeIPs)
 	if len(out) > 0 {
-		Logf("[INFO]", "%s: fence CIDRs after excluding node InternalIPs: %v", fenceTargetServicesEnv, out)
+		Logf("[INFO]", "%s: fence CIDRs with ports after excluding node InternalIPs: %v", fenceTargetServicesEnv, out)
 	} else if len(merged) > 0 {
 		Logf("[WARN]", "%s: all backend IPs matched node InternalIPs; nothing to fence from configured services", fenceTargetServicesEnv)
 	}

@@ -290,6 +290,119 @@ var _ = Describe("EnableVolumeReplication", func() {
 		})
 	})
 
+	Describe("L1-E-003A: Peer unreachable using unified FaultInjectionHandler", func() {
+		It("L1-E-003A + L1-INFO-005: unified handler abstracts fault injection; fence blocks VR with error, unfence recovers VR with healthy status", func() {
+			c := GetK8sClient()
+
+			// Create namespace FIRST (handler needs it for resource creation)
+			nsName := UniqueNamespace()
+			By("Creating namespace " + nsName)
+			ns := CreateNamespace(ctx, c, nsName)
+			RegisterTestNamespace(ns.Name)
+
+			// Get secret ref BEFORE creating handler (needed for NetworkFenceClass parameters)
+			secretName, secretNs := ReplicationSecretRef(ctx, c, env, nsName)
+			By("Secret available: " + secretNs + "/" + secretName)
+
+			// 1. Create handler with proper namespace (auto-detects type from E2E_FAULT_INJECTOR env)
+			// In full-DR mode, include PeerClient for peer cluster discovery
+			faultConfig := helpers.FaultInjectionConfig{
+				Client:     c,
+				RESTConfig: GetRESTConfig(),
+				Namespace:  nsName,
+				ProviderParams: map[string]string{
+					"provisioner":     env.Provisioner,
+					"image":           helpers.DefaultIptablesImageWithRegistry,
+					"secretName":      secretName,
+					"secretNamespace": secretNs,
+				},
+			}
+			if IsFullDRMode() {
+				faultConfig.PeerClient = GetK8sClientForCluster(ClusterDR2)
+			}
+
+			handler, err := helpers.NewFaultInjectionHandler(ctx, faultConfig)
+			Expect(err).NotTo(HaveOccurred(), "NewFaultInjectionHandler")
+
+			// 2. Check support (skip if not supported)
+			supported, reason := handler.IsSupported(ctx)
+			if !supported {
+				Skip("L1-E-003A: fault injection not supported: " + reason)
+			}
+
+			// 3. Discover targets via handler (encapsulates full-DR detection + fallback logic)
+			By("Discovering fence targets (handler uses same logic as L1-E-003)")
+			targets := handler.DiscoverFenceTargets(ctx)
+			if len(targets) == 0 {
+				Skip("L1-E-003A: set FENCE_CIDRS or FENCE_TARGET_SERVICES (namespace/service list); with full-DR also set FENCE_PEER_SERVICES")
+			}
+			Logf("[TEST]", "L1-E-003A fence targets: %v (handler will add port info for iptables blocking)", targets)
+
+			// 4. Create PVC and VRC (only if targets found)
+			By("Creating PVC and waiting for Bound")
+			pvc := CreatePVC(ctx, c, nsName, "pvc-handler", env.StorageClass, "1Gi", func(p *corev1.PersistentVolumeClaim) {
+				_, _ = fmt.Fprintf(GinkgoWriter, "  [PVC] %s\n", FormatPVCStatus(p))
+			})
+
+			vrcName := "vrc-handler-" + nsName
+			By("Creating VolumeReplicationClass (snapshot) " + vrcName)
+			vrc := CreateVolumeReplicationClass(ctx, c, vrcName, env.Provisioner, secretName, secretNs, MirroringModeSnapshot)
+
+			// 5. Apply fence (handler validates embedded)
+			By(fmt.Sprintf("Applying fault injection to targets: %v (handler validates fence is blocking)", targets))
+			Expect(handler.ApplyFence(ctx, targets)).To(Succeed(), "handler.ApplyFence")
+
+			vrName := "vr-handler"
+			By("Creating VolumeReplication " + vrName + " while fault injection is active (EnableVolumeReplication should fail)")
+			vr := CreateVolumeReplication(ctx, c, nsName, vrName, vrcName, pvc.Name, replicationv1alpha1.Primary)
+
+			// 6. Register cleanup
+			DeferCleanup(func() {
+				cleanupCtx := context.Background()
+				_ = handler.Cleanup(cleanupCtx)
+				DeleteVolumeReplicationWithCleanup(cleanupCtx, c, vr)
+				DeleteVolumeReplicationClassWithCleanup(cleanupCtx, c, vrc)
+				DeletePVCWithCleanup(cleanupCtx, c, pvc)
+				DeleteNamespace(cleanupCtx, c, ns)
+			})
+
+			By("Waiting for VR to report error (peer unreachable due to fault injection)")
+			WaitForVolumeReplicationError(ctx, c, vr)
+			err = c.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrName}, vr)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("GetVolumeReplicationInfo (L1-INFO-005): Verify VR shows error condition when peer unreachable")
+			Logf("[L1-INFO-005]", "GetVolumeReplicationInfo: Fetching VR status for error condition verification (peer unreachable)")
+			Logf("[L1-INFO-005]", "VR Status Message: %q", vr.Status.Message)
+			Logf("[L1-INFO-005]", "VR Status Conditions: %v", vr.Status.Conditions)
+			Expect(hasVolumeReplicationErrorCondition(vr)).To(BeTrue(),
+				"L1-INFO-005: GetVolumeReplicationInfo must show error condition when peer unreachable due to fault injection (message: %q, conditions: %v)", vr.Status.Message, vr.Status.Conditions)
+
+			// 7. Remove fence (handler validates embedded)
+			By("Removing fault injection (handler validates connectivity is restored)")
+			Expect(handler.RemoveFence(ctx)).To(Succeed(), "handler.RemoveFence")
+
+			By("Waiting for controller to retry and EnableVolumeReplication to succeed")
+			WaitForVolumeReplicationReplicatingOrCompleted(ctx, c, vr, func(v *replicationv1alpha1.VolumeReplication) {
+				_, _ = fmt.Fprintf(GinkgoWriter, "  [VR] %s\n", FormatVRStatus(v))
+			})
+			err = c.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrName}, vr)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Assertion: L1-E-003A — VR state is healthy after unfence")
+			Expect(vr.Status.State).To(Or(Equal(replicationv1alpha1.PrimaryState), Equal(replicationv1alpha1.UnknownState)),
+				"L1-E-003A: VR state must be Primary or Unknown after unfence and successful enable, got %q", vr.Status.State)
+
+			By("GetVolumeReplicationInfo (L1-INFO-005): Verify VR shows healthy status after unfence")
+			Logf("[L1-INFO-005]", "GetVolumeReplicationInfo: Fetching VR status for health verification (after unfence)")
+			Logf("[L1-INFO-005]", "VR Status State: %v", vr.Status.State)
+			Logf("[L1-INFO-005]", "VR Status Message: %q", vr.Status.Message)
+			Logf("[L1-INFO-005]", "VR Status Conditions: %v", vr.Status.Conditions)
+			Expect(vr.Status.Conditions).NotTo(BeEmpty(),
+				"L1-INFO-005: GetVolumeReplicationInfo must return conditions for healthy replication after unfence (state: %v, message: %q, conditions: %v)", vr.Status.State, vr.Status.Message, vr.Status.Conditions)
+		})
+	})
+
 	Describe("L1-E-005: Idempotent enable", func() {
 		It("L1-E-005 + L1-INFO-001: idempotent enable then get replication info (2 test cases)", func() {
 			By("Test case 1: EnableVolumeReplication (L1-E-005) — idempotent enable; GetVolumeReplicationInfo (L1-INFO-001) on first VR")
