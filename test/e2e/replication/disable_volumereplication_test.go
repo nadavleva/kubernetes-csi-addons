@@ -28,6 +28,7 @@ import (
 
 	csiaddonsv1alpha1 "github.com/csi-addons/kubernetes-csi-addons/api/csiaddons/v1alpha1"
 	replicationv1alpha1 "github.com/csi-addons/kubernetes-csi-addons/api/replication.storage/v1alpha1"
+	"github.com/csi-addons/kubernetes-csi-addons/test/e2e/helpers"
 )
 
 var _ = Describe("DisableVolumeReplication", func() {
@@ -290,6 +291,102 @@ var _ = Describe("DisableVolumeReplication", func() {
 			Expect(err).To(HaveOccurred())
 			Expect(errors.IsNotFound(err)).To(BeTrue(),
 				"VR should be gone after DisableVolumeReplication with unreachable peer")
+		})
+	})
+
+	Describe("L1-DIS-005-A: Disable with peer unreachable (unified FaultInjectionHandler)", func() {
+		It("L1-DIS-005-A: unified handler abstracts NetworkFence/iptables; blocks peer, VR fails, unfence allows delete", func() {
+			By("L1-DIS-005-A: FaultInjectionHandler blocks peer; create VR, attempt disable (similar to L1-DIS-005 but via handler)")
+			c := GetK8sClient()
+
+			nsName := UniqueNamespace()
+			By("Creating namespace " + nsName)
+			ns := CreateNamespace(ctx, c, nsName)
+			RegisterTestNamespace(ns.Name)
+
+			secretName, secretNs := ReplicationSecretRef(ctx, c, env, nsName)
+
+			// Create handler (auto-detects NetworkFence or iptables from E2E_FAULT_INJECTOR env)
+			// In full-DR mode, include PeerClient for peer cluster discovery (iptables needs to fence peer targets)
+			faultConfig := helpers.FaultInjectionConfig{
+				Client:     c,
+				RESTConfig: GetRESTConfig(),
+				Namespace:  nsName,
+				ProviderParams: map[string]string{
+					"provisioner":     env.Provisioner,
+					"secretName":      secretName,
+					"secretNamespace": secretNs,
+				},
+			}
+			if IsFullDRMode() {
+				faultConfig.PeerClient = GetK8sClientForCluster(ClusterDR2)
+			}
+
+			handler, err := helpers.NewFaultInjectionHandler(ctx, faultConfig)
+			Expect(err).NotTo(HaveOccurred(), "NewFaultInjectionHandler")
+
+			// Skip if not supported (e.g., no NetworkFence CRDs and E2E_FAULT_INJECTOR not set)
+			supported, reason := handler.IsSupported(ctx)
+			if !supported {
+				Skip("L1-DIS-005-A: " + reason)
+			}
+
+			// Discover targets and apply fault injection (handler abstracts NetworkFence vs iptables)
+			targets := handler.DiscoverFenceTargets(ctx)
+			if len(targets) == 0 {
+				Skip("L1-DIS-005-A could not discover targets: set FENCE_CIDRS or FENCE_TARGET_SERVICES for iptables; with full-DR also set FENCE_PEER_SERVICES")
+			}
+
+			By("Creating PVC and waiting for Bound")
+			pvc := CreatePVC(ctx, c, nsName, "pvc-handler-dis", env.StorageClass, "1Gi", func(p *corev1.PersistentVolumeClaim) {
+				_, _ = fmt.Fprintf(GinkgoWriter, "  [PVC] %s\n", FormatPVCStatus(p))
+			})
+
+			vrcName := "vrc-handler-dis-" + nsName
+			By("Creating VolumeReplicationClass (snapshot)")
+			vrc := CreateVolumeReplicationClass(ctx, c, vrcName, env.Provisioner, secretName, secretNs, MirroringModeSnapshot)
+
+			By("Applying fault injection to block peer via handler")
+			Expect(handler.ApplyFence(ctx, targets)).To(Succeed())
+
+			vrName := "vr-handler-dis"
+			By("Creating VolumeReplication (primary) with peer blocked by handler")
+			vr := CreateVolumeReplication(ctx, c, nsName, vrName, vrcName, pvc.Name, replicationv1alpha1.Primary)
+
+			DeferCleanup(func() {
+				cleanupCtx := context.Background()
+				// Remove fault injection first to allow clean delete
+				_ = handler.RemoveFence(cleanupCtx)
+				_ = handler.Cleanup(cleanupCtx)
+				DeleteVolumeReplicationWithCleanup(cleanupCtx, c, vr)
+				DeleteVolumeReplicationClassWithCleanup(cleanupCtx, c, vrc)
+				DeletePVCWithCleanup(cleanupCtx, c, pvc)
+				DeleteNamespace(cleanupCtx, c, ns)
+			})
+
+			By("Waiting for VR to report error due to blocked peer")
+			WaitForVolumeReplicationErrorWithTimeout(ctx, c, vr, quickErrorTimeout)
+
+			By("L1-DIS-005-A: Attempting to delete VR while peer unreachable (force=false, should fail gracefully)")
+			DeleteVolumeReplicationWithCleanup(ctx, c, vr)
+
+			By("L1-DIS-005-A: Removing fault injection to restore connectivity")
+			Expect(handler.RemoveFence(ctx)).To(Succeed())
+
+			By("L1-DIS-005-A: Attempting to delete VR again (now peer is reachable; should succeed)")
+			DeleteVolumeReplicationWithCleanup(ctx, c, vr)
+
+			By("L1-DIS-005-A: Assertion — VR deletion completed after unfence (graceful disable)")
+			err = c.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrName}, vr)
+			Expect(err).To(HaveOccurred())
+			Expect(errors.IsNotFound(err)).To(BeTrue(),
+				"VR should be gone after unfence and graceful disable")
+
+			By("L1-DIS-005-A: Assertion — PVC remains bound (replication removed)")
+			err = c.Get(ctx, client.ObjectKey{Namespace: nsName, Name: pvc.Name}, pvc)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(pvc.Status.Phase).To(Equal(corev1.ClaimBound),
+				"PVC should remain bound after disable, got %s", pvc.Status.Phase)
 		})
 	})
 
