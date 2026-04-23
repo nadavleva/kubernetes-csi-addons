@@ -463,6 +463,96 @@ var _ = Describe("DisableVolumeReplication", func() {
 		})
 	})
 
+	Describe("L1-DIS-006-A: Disable with peer unreachable (unified FaultInjectionHandler, force=true)", func() {
+		It("L1-DIS-006-A: unified handler abstracts NetworkFence/iptables; blocks peer, VR fails, force delete succeeds immediately", func() {
+			By("L1-DIS-006-A: FaultInjectionHandler blocks peer; create VR, force delete (immediate success expected)")
+			c := GetK8sClient()
+
+			nsName := UniqueNamespace()
+			By("Creating namespace " + nsName)
+			ns := CreateNamespace(ctx, c, nsName)
+			RegisterTestNamespace(ns.Name)
+
+			secretName, secretNs := ReplicationSecretRef(ctx, c, env, nsName)
+
+			// Create handler (auto-detects NetworkFence or iptables from E2E_FAULT_INJECTOR env)
+			// In full-DR mode, include PeerClient for peer cluster discovery (iptables needs to fence peer targets)
+			faultConfig := helpers.FaultInjectionConfig{
+				Client:     c,
+				RESTConfig: GetRESTConfig(),
+				Namespace:  nsName,
+				ProviderParams: map[string]string{
+					"provisioner":     env.Provisioner,
+					"secretName":      secretName,
+					"secretNamespace": secretNs,
+				},
+			}
+			if IsFullDRMode() {
+				faultConfig.PeerClient = GetK8sClientForCluster(ClusterDR2)
+			}
+
+			handler, err := helpers.NewFaultInjectionHandler(ctx, faultConfig)
+			Expect(err).NotTo(HaveOccurred(), "NewFaultInjectionHandler")
+
+			// Skip if not supported (e.g., no NetworkFence CRDs and E2E_FAULT_INJECTOR not set)
+			supported, reason := handler.IsSupported(ctx)
+			if !supported {
+				Skip("L1-DIS-006-A: " + reason)
+			}
+
+			// Discover targets and apply fault injection (handler abstracts NetworkFence vs iptables)
+			targets := handler.DiscoverFenceTargets(ctx)
+			if len(targets) == 0 {
+				Skip("L1-DIS-006-A could not discover targets: set FENCE_CIDRS or FENCE_TARGET_SERVICES for iptables; with full-DR also set FENCE_PEER_SERVICES")
+			}
+
+			By("Creating PVC and waiting for Bound")
+			pvc := CreatePVC(ctx, c, nsName, "pvc-handler-dis-force", env.StorageClass, "1Gi", func(p *corev1.PersistentVolumeClaim) {
+				_, _ = fmt.Fprintf(GinkgoWriter, "  [PVC] %s\n", FormatPVCStatus(p))
+			})
+
+			vrcName := "vrc-handler-dis-force-" + nsName
+			By("Creating VolumeReplicationClass (snapshot)")
+			vrc := CreateVolumeReplicationClass(ctx, c, vrcName, env.Provisioner, secretName, secretNs, MirroringModeSnapshot)
+
+			By("Applying fault injection to block peer via handler")
+			Expect(handler.ApplyFence(ctx, targets)).To(Succeed())
+
+			vrName := "vr-handler-dis-force"
+			By("Creating VolumeReplication (primary) with peer blocked by handler")
+			vr := CreateVolumeReplication(ctx, c, nsName, vrName, vrcName, pvc.Name, replicationv1alpha1.Primary)
+
+			DeferCleanup(func() {
+				cleanupCtx := context.Background()
+				// Remove fault injection to allow clean cleanup
+				_ = handler.RemoveFence(cleanupCtx)
+				_ = handler.Cleanup(cleanupCtx)
+				DeleteVolumeReplicationWithCleanup(cleanupCtx, c, vr)
+				DeleteVolumeReplicationClassWithCleanup(cleanupCtx, c, vrc)
+				DeletePVCWithCleanup(cleanupCtx, c, pvc)
+				DeleteNamespace(cleanupCtx, c, ns)
+			})
+
+			By("Waiting for VR to report error due to blocked peer")
+			WaitForVolumeReplicationError(ctx, c, vr)
+
+			By("L1-DIS-006-A: Attempting to delete VR with force=true (immediate disable expected, peer still blocked)")
+			DeleteVolumeReplicationWithCleanup(ctx, c, vr)
+
+			By("L1-DIS-006-A: Assertion — VR deleted successfully with force=true (unreachable peer handled)")
+			err = c.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrName}, vr)
+			Expect(err).To(HaveOccurred())
+			Expect(errors.IsNotFound(err)).To(BeTrue(),
+				"VR should be gone after force DisableVolumeReplication with unreachable peer")
+
+			By("L1-DIS-006-A: Assertion — PVC remains bound (primary writeable)")
+			err = c.Get(ctx, client.ObjectKey{Namespace: nsName, Name: pvc.Name}, pvc)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(pvc.Status.Phase).To(Equal(corev1.ClaimBound),
+				"PVC should remain bound after force disable, got %s", pvc.Status.Phase)
+		})
+	})
+
 	Describe("L1-DIS-009: Force disable active replication on primary", func() {
 		It("L1-DIS-009: disable replication on primary (force=true, active replication), expect immediate disable", func() {
 			By("L1-DIS-009: Enable replication on primary, then force disable")
