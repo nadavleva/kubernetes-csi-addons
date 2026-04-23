@@ -457,8 +457,11 @@ var _ = Describe("DemoteVolumeReplication", func() {
 			WaitForNetworkFenceResult(ctx, cDR1, nf, csiaddonsv1alpha1.FencingOperationResultSucceeded)
 
 			By("[DR1] Attempting to demote primary to secondary while peer is fenced (force=false; should fail)")
+			// Fetch latest VR before update (controller may have modified it)
+			err := cDR1.Get(ctx, client.ObjectKeyFromObject(vrDR1), vrDR1)
+			Expect(err).NotTo(HaveOccurred())
 			vrDR1.Spec.ReplicationState = replicationv1alpha1.Secondary
-			err := cDR1.Update(ctx, vrDR1)
+			err = cDR1.Update(ctx, vrDR1)
 			Expect(err).NotTo(HaveOccurred())
 
 			By("[DR1] Waiting for VR to report error (FailedToDemote or peer unreachable)")
@@ -602,8 +605,11 @@ var _ = Describe("DemoteVolumeReplication", func() {
 			WaitForNetworkFenceResult(ctx, cDR1, nf, csiaddonsv1alpha1.FencingOperationResultSucceeded)
 
 			By("[DR1] Attempting to demote primary to secondary while peer is fenced (force=true; should succeed)")
+			// Fetch latest VR before update (controller may have modified it)
+			err := cDR1.Get(ctx, client.ObjectKeyFromObject(vrDR1), vrDR1)
+			Expect(err).NotTo(HaveOccurred())
 			vrDR1.Spec.ReplicationState = replicationv1alpha1.Secondary
-			err := cDR1.Update(ctx, vrDR1)
+			err = cDR1.Update(ctx, vrDR1)
 			Expect(err).NotTo(HaveOccurred())
 
 			By("[DR1] Waiting for VR to report success (Replicating or Completed with Demoted reason)")
