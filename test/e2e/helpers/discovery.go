@@ -96,6 +96,10 @@ func GetFenceCIDRsForFaultInjectionPeer(ctx context.Context, fencingClient, peer
 	}
 	fencingNodeIPs := collectNodeInternalIPSet(ctx, fencingClient)
 	keys := parseFencePeerServicesFromEnv()
+	// If FENCE_PEER_SERVICES not set, fall back to FENCE_TARGET_SERVICES
+	if len(keys) == 0 {
+		keys = parseFenceTargetServicesFromEnv()
+	}
 	if len(keys) == 0 {
 		Logf("[WARN]", "GetFenceCIDRsForFaultInjectionPeer: set %s or %s (namespace/service list) or FENCE_CIDRS",
 			fencePeerServicesEnv, fenceTargetServicesEnv)
@@ -103,8 +107,9 @@ func GetFenceCIDRsForFaultInjectionPeer(ctx context.Context, fencingClient, peer
 	}
 	var merged []string
 	for _, key := range keys {
-		ips := collectServiceBackendIPs(ctx, peerClient, key)
-		Logf("[INFO]", "peer fence: %s/%s backend IPs on peer cluster: %v", key.Namespace, key.Name, ips)
+		// Use pod fallback discovery for peer services (handles cases where service doesn't exist)
+		ips := collectServiceBackendIPsWithPodFallback(ctx, peerClient, key)
+		Logf("[INFO]", "peer fence: %s/%s backend IPs on peer cluster (with pod fallback): %v", key.Namespace, key.Name, ips)
 		merged = append(merged, ips...)
 	}
 	out := filterEndpointIPsToCIDRs(merged, fencingNodeIPs)
@@ -141,7 +146,20 @@ func getFenceCIDRs(ctx context.Context, c client.Client, provisioner, networkFen
 		Logf("[DEBUG]", "GetFenceCIDRs: Using FENCE_CIDRS env var: %v", cidrs)
 		return cidrs
 	}
-	Logf("[DEBUG]", "GetFenceCIDRs: FENCE_CIDRS not set, checking CSIAddonsNode for networkFenceClientStatus (provisioner=%s, class=%s)", provisioner, networkFenceClassName)
+
+	// Try service discovery BEFORE CSIAddonsNode polling (avoids 30s timeout)
+	// This allows NetworkFence to use FENCE_TARGET_SERVICES like iptables does
+	nodeIPs := collectNodeInternalIPSet(ctx, c)
+	if cidrs := fenceCIDRsFromConfiguredTargetServices(ctx, c, nodeIPs); len(cidrs) > 0 {
+		Logf("[INFO]", "GetFenceCIDRs: Found CIDRs from FENCE_TARGET_SERVICES service discovery: %v", cidrs)
+		return capFenceCIDRList(cidrs)
+	}
+	if cidrs := fenceCIDRsFromAutoDiscoveredEndpoints(ctx, c, nodeIPs); len(cidrs) > 0 {
+		Logf("[INFO]", "GetFenceCIDRs: Found CIDRs from auto-discovered endpoints: %v", cidrs)
+		return capFenceCIDRList(cidrs)
+	}
+
+	Logf("[DEBUG]", "GetFenceCIDRs: Service discovery found no CIDRs, checking CSIAddonsNode for networkFenceClientStatus (provisioner=%s, class=%s)", provisioner, networkFenceClassName)
 	deadline := time.Now().Add(fenceCIDRProbeTimeout)
 	var cidrs []string
 	for time.Now().Before(deadline) {
@@ -493,6 +511,64 @@ func filterEndpointIPsWithPortsToCIDRs(ipPorts []string, nodeIPs map[string]stru
 	return out
 }
 
+// collectServiceBackendIPsWithPodFallback discovers service backend IPs, with fallback to pod discovery.
+// Order: 1) EndpointSlices (service-based discovery), 2) Pod discovery by service-name labels.
+// This handles cases where services don't exist but pods do (e.g., rook-ceph-mon, apps deployed directly).
+func collectServiceBackendIPsWithPodFallback(ctx context.Context, c client.Client, key client.ObjectKey) []string {
+	// Try service backend IPs first (EndpointSlices)
+	ips := collectServiceBackendIPs(ctx, c, key)
+	if len(ips) > 0 {
+		return ips
+	}
+	// Service has no endpoints; try pod discovery as fallback.
+	// Look for pods with label app=<service-name> (common pattern for Rook and other operators).
+	podIPs := collectPodIPsByLabel(ctx, c, key.Namespace, map[string]string{"app": key.Name})
+	if len(podIPs) > 0 {
+		Logf("[DEBUG]", "collectServiceBackendIPsWithPodFallback: service %s/%s has no EndpointSlices; discovered pod IPs via label app=%s: %v",
+			key.Namespace, key.Name, key.Name, podIPs)
+		return podIPs
+	}
+	// Additional fallback for specific service name patterns
+	// (e.g., "rook-ceph-mon" might have different naming conventions)
+	if strings.Contains(key.Name, "rook-ceph-mon") {
+		// Try the exact label app=rook-ceph-mon used by all Rook installs
+		podIPs := collectPodIPsByLabel(ctx, c, key.Namespace, map[string]string{"app": "rook-ceph-mon"})
+		if len(podIPs) > 0 {
+			Logf("[DEBUG]", "collectServiceBackendIPsWithPodFallback: discovered rook-ceph-mon pods: %v", podIPs)
+			return podIPs
+		}
+	}
+	return nil
+}
+
+// collectPodIPsByLabel discovers pod IPs in a namespace matching the given labels.
+// Returns the pod IP addresses for running pods with the specified labels.
+func collectPodIPsByLabel(ctx context.Context, c client.Client, namespace string, labels map[string]string) []string {
+	podList := &corev1.PodList{}
+	listOpts := []client.ListOption{
+		client.InNamespace(namespace),
+		client.MatchingLabels(labels),
+	}
+	if err := c.List(ctx, podList, listOpts...); err != nil {
+		Logf("[DEBUG]", "collectPodIPsByLabel: list pods in %s with labels %v: %v", namespace, labels, err)
+		return nil
+	}
+
+	var ips []string
+	seen := make(map[string]struct{})
+	for i := range podList.Items {
+		pod := &podList.Items[i]
+		// Only include running pods with assigned IPs
+		if pod.Status.Phase == corev1.PodRunning && pod.Status.PodIP != "" {
+			if _, ok := seen[pod.Status.PodIP]; !ok {
+				ips = append(ips, pod.Status.PodIP)
+				seen[pod.Status.PodIP] = struct{}{}
+			}
+		}
+	}
+	return ips
+}
+
 // fenceCIDRsFromConfiguredTargetServices discovers fence targets from FENCE_TARGET_SERVICES.
 func fenceCIDRsFromConfiguredTargetServices(ctx context.Context, c client.Client, nodeIPs map[string]struct{}) []string {
 	keys := parseFenceTargetServicesFromEnv()
@@ -508,10 +584,10 @@ func fenceCIDRsFromConfiguredTargetServices(ctx context.Context, c client.Client
 			merged = append(merged, ipPorts...)
 			continue
 		}
-		// Fall back to plain IP discovery if no ports found
-		ips := collectServiceBackendIPs(ctx, c, key)
+		// Fall back to service+pod discovery (service IPs, then pods if service has no endpoints)
+		ips := collectServiceBackendIPsWithPodFallback(ctx, c, key)
 		if len(ips) > 0 {
-			Logf("[INFO]", "%s: service %s/%s backend IPs (no port info, Endpoints+EndpointSlice): %v", fenceTargetServicesEnv, key.Namespace, key.Name, ips)
+			Logf("[INFO]", "%s: service %s/%s backend IPs (Endpoints+EndpointSlice, with pod fallback): %v", fenceTargetServicesEnv, key.Namespace, key.Name, ips)
 			merged = append(merged, ips...)
 		}
 	}

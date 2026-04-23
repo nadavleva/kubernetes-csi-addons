@@ -19,6 +19,7 @@ package replication
 import (
 	"context"
 	"fmt"
+	"os"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -29,6 +30,7 @@ import (
 
 	csiaddonsv1alpha1 "github.com/csi-addons/kubernetes-csi-addons/api/csiaddons/v1alpha1"
 	replicationv1alpha1 "github.com/csi-addons/kubernetes-csi-addons/api/replication.storage/v1alpha1"
+	"github.com/csi-addons/kubernetes-csi-addons/test/e2e/helpers"
 )
 
 // hasVolumeReplicationCompletedCondition checks if VR has Completed=True condition.
@@ -375,6 +377,145 @@ var _ = Describe("ResyncVolumeReplication", func() {
 			}, 5*time.Minute, 5*time.Second).Should(BeTrue())
 
 			By("L1-RSYNC-003: Assertion — data consistency after resync")
+			_ = cDR2.Get(ctx, client.ObjectKeyFromObject(vrDR2), vrDR2)
+			_, _ = fmt.Fprintf(GinkgoWriter, "  [DR2][INFO] post-resync: %s\n", FormatVRStatus(vrDR2))
+			Expect(hasVolumeReplicationCompletedCondition(vrDR2)).To(BeTrue(), "Should have Completed=True after resync")
+		})
+	})
+
+	Describe("L1-RSYNC-003-A: Resync with unified FaultInjectionHandler (split-brain recovery)", func() {
+		It("L1-RSYNC-003-A: resync with secondary fenced via handler (split-brain), expect resync completes after unfence", func() {
+			By("L1-RSYNC-003-A: Create primary/secondary, apply FaultInjectionHandler fence, resolve, then resync")
+			SkipIfNotFullDR("L1-RSYNC-003-A", "requires two clusters (DR1_CONTEXT and DR2_CONTEXT)")
+
+			cDR1 := GetK8sClientForCluster(ClusterDR1)
+			cDR2 := GetK8sClientForCluster(ClusterDR2)
+
+			nsName := UniqueNamespace()
+			By("Creating namespace on both DR1 and DR2")
+			ns1 := CreateNamespace(ctx, cDR1, nsName)
+			ns2 := CreateNamespace(ctx, cDR2, nsName)
+			RegisterTestNamespace(ns2.Name)
+
+			secretName, secretNs := ReplicationSecretRef(ctx, cDR1, env, nsName)
+			_, _ = ReplicationSecretRef(ctx, cDR2, env, nsName)
+
+			// Create handler early to discover targets before creating VRs
+			// Client (cDR2) = secondary cluster (where fence rules are applied)
+			// RESTConfig must match the Client's cluster (secondary = DR2)
+			// Do NOT use PeerClient here - we want to fence the secondary's access to storage service,
+			// not fence the peer's nodes. L1-RSYNC-003 uses storage service CIDRs from CSIAddonsNode.
+			// Use FENCE_TARGET_SERVICES to explicitly specify storage service (same as env var)
+			fenceTargetServices := os.Getenv("FENCE_TARGET_SERVICES")
+			faultConfig := helpers.FaultInjectionConfig{
+				Client:     cDR2,
+				RESTConfig: GetRESTConfigDR2(),
+				Namespace:  nsName,
+				ProviderParams: map[string]string{
+					"provisioner":         env.Provisioner,
+					"secretName":          secretName,
+					"secretNamespace":     secretNs,
+					"fenceTargetServices": fenceTargetServices, // Pass through FENCE_TARGET_SERVICES env
+				},
+			}
+
+			handler, err := helpers.NewFaultInjectionHandler(ctx, faultConfig)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Skip if not supported (e.g., no NetworkFence CRDs and E2E_FAULT_INJECTOR not set)
+			supported, reason := handler.IsSupported(ctx)
+			if !supported {
+				Skip("L1-RSYNC-003-A: " + reason)
+			}
+
+			By("Creating primary PVC and VR on DR1")
+			pvcDR1 := CreatePVC(ctx, cDR1, nsName, "pvc-dr1-handler-resync", env.StorageClass, "1Gi", func(p *corev1.PersistentVolumeClaim) {
+				_, _ = fmt.Fprintf(GinkgoWriter, "  [DR1][PVC] %s\n", FormatPVCStatus(p))
+			})
+			vrcName := "vrc-handler-resync-" + nsName
+			vrcDR1 := CreateVolumeReplicationClass(ctx, cDR1, vrcName, env.Provisioner, secretName, secretNs, MirroringModeSnapshot)
+			vrDR1 := CreateVolumeReplication(ctx, cDR1, nsName, "vr-dr1-handler-resync", vrcName, pvcDR1.Name, replicationv1alpha1.Primary)
+
+			By("Waiting for primary VR on DR1 to reach Replicating=True")
+			WaitForVolumeReplicationReplicatingOrCompleted(ctx, cDR1, vrDR1, func(v *replicationv1alpha1.VolumeReplication) {
+				_, _ = fmt.Fprintf(GinkgoWriter, "  [DR1][VR] %s\n", FormatVRStatus(v))
+			})
+
+			By("Creating secondary PVC and VR on DR2")
+			pvcDR2, pvDR2 := CreateSecondaryPVCFromPrimary(ctx, cDR1, cDR2, pvcDR1, nsName, "pvc-dr2-handler-resync", func(p *corev1.PersistentVolumeClaim) {
+				_, _ = fmt.Fprintf(GinkgoWriter, "  [DR2][PVC] %s\n", FormatPVCStatus(p))
+			})
+			vrcDR2 := CreateVolumeReplicationClass(ctx, cDR2, vrcName, env.Provisioner, secretName, secretNs, MirroringModeSnapshot)
+			vrDR2 := CreateVolumeReplication(ctx, cDR2, nsName, "vr-dr2-handler-resync", vrcName, pvcDR2.Name, replicationv1alpha1.Secondary)
+
+			By("Waiting for secondary VR on DR2 to reach Replicating=True")
+			WaitForVolumeReplicationReplicatingOrCompleted(ctx, cDR2, vrDR2, func(v *replicationv1alpha1.VolumeReplication) {
+				_, _ = fmt.Fprintf(GinkgoWriter, "  [DR2][VR] %s\n", FormatVRStatus(v))
+			})
+
+			// Discover targets AFTER replication is healthy (baseline established)
+			// This ensures targets reflect the current connectivity state
+			targets := handler.DiscoverFenceTargets(ctx)
+			if len(targets) == 0 {
+				Skip("L1-RSYNC-003-A: could not discover targets: set FENCE_CIDRS or FENCE_TARGET_SERVICES for iptables; with full-DR also set FENCE_PEER_SERVICES")
+			}
+
+			DeferCleanup(func() {
+				cleanupCtx := context.Background()
+				_ = handler.RemoveFence(cleanupCtx)
+				_ = handler.Cleanup(cleanupCtx)
+				DeleteVolumeReplicationWithCleanup(cleanupCtx, cDR2, vrDR2)
+				DeleteVolumeReplicationClassWithCleanup(cleanupCtx, cDR2, vrcDR2)
+				DeletePVCWithCleanup(cleanupCtx, cDR2, pvcDR2)
+				DeletePV(cleanupCtx, cDR2, pvDR2)
+				DeleteVolumeReplicationWithCleanup(cleanupCtx, cDR1, vrDR1)
+				DeleteVolumeReplicationClassWithCleanup(cleanupCtx, cDR1, vrcDR1)
+				DeletePVCWithCleanup(cleanupCtx, cDR1, pvcDR1)
+				DeleteNamespace(cleanupCtx, cDR1, ns1)
+				DeleteNamespace(cleanupCtx, cDR2, ns2)
+			})
+
+			By("L1-RSYNC-003-A: Applying fault injection to isolate secondary")
+			Expect(handler.ApplyFence(ctx, targets)).To(Succeed())
+
+			By("L1-RSYNC-003-A: Validating secondary is fenced (split-brain state)")
+			Eventually(func() bool {
+				_ = cDR2.Get(ctx, client.ObjectKeyFromObject(vrDR2), vrDR2)
+				_, _ = fmt.Fprintf(GinkgoWriter, "  [DR2][VR] fenced: %s\n", FormatVRStatus(vrDR2))
+				return HasVolumeReplicationErrorCondition(vrDR2)
+			}, 30*time.Second, 2*time.Second).Should(BeTrue(),
+				"Secondary should show error after fault injection applied")
+
+			By("L1-RSYNC-003-A: Removing fault injection to resolve split-brain")
+			Expect(handler.RemoveFence(ctx)).To(Succeed())
+
+			By("L1-RSYNC-003-A: Triggering resync after split-brain recovery")
+			err = cDR2.Get(ctx, client.ObjectKeyFromObject(vrDR2), vrDR2)
+			Expect(err).NotTo(HaveOccurred())
+			vrDR2.Spec.ReplicationState = replicationv1alpha1.Resync
+			err = cDR2.Update(ctx, vrDR2)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Waiting for resync to complete (checking Completed condition)")
+			Eventually(func() bool {
+				_ = cDR2.Get(ctx, client.ObjectKeyFromObject(vrDR2), vrDR2)
+				_, _ = fmt.Fprintf(GinkgoWriter, "  [DR2][VR] resync: %s\n", FormatVRStatus(vrDR2))
+				return hasVolumeReplicationCompletedCondition(vrDR2) && hasResyncOperationCompleted(vrDR2)
+			}, 5*time.Minute, 5*time.Second).Should(BeTrue())
+			err = cDR2.Get(ctx, client.ObjectKeyFromObject(vrDR2), vrDR2)
+			Expect(err).NotTo(HaveOccurred())
+			vrDR2.Spec.ReplicationState = replicationv1alpha1.Resync
+			err = cDR2.Update(ctx, vrDR2)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Waiting for resync to complete (checking Completed condition)")
+			Eventually(func() bool {
+				_ = cDR2.Get(ctx, client.ObjectKeyFromObject(vrDR2), vrDR2)
+				_, _ = fmt.Fprintf(GinkgoWriter, "  [DR2][VR] resync: %s\n", FormatVRStatus(vrDR2))
+				return hasVolumeReplicationCompletedCondition(vrDR2)
+			}, 5*time.Minute, 5*time.Second).Should(BeTrue())
+
+			By("L1-RSYNC-003-A: Assertion — data consistency after resync")
 			_ = cDR2.Get(ctx, client.ObjectKeyFromObject(vrDR2), vrDR2)
 			_, _ = fmt.Fprintf(GinkgoWriter, "  [DR2][INFO] post-resync: %s\n", FormatVRStatus(vrDR2))
 			Expect(hasVolumeReplicationCompletedCondition(vrDR2)).To(BeTrue(), "Should have Completed=True after resync")
