@@ -19,6 +19,7 @@ package helpers
 import (
 	"context"
 	"fmt"
+	"net"
 	"os"
 	"strings"
 	"time"
@@ -113,6 +114,17 @@ func (h *NetworkFenceHandler) ApplyFence(ctx context.Context, targets []string) 
 	h.nfcClass = nfc
 
 	// 2. Create NetworkFence with Fenced state
+	// Strip ports from targets before passing to NetworkFence (NetworkFence only accepts CIDRs, not CIDR:port)
+	// This is necessary because discovery may return port-aware targets for iptables compatibility
+	cleanedCIDRs := make([]string, 0, len(targets))
+	for _, target := range targets {
+		cleanCIDR, err := stripPort(target)
+		if err != nil {
+			return fmt.Errorf("strip port from target %q: %w", target, err)
+		}
+		cleanedCIDRs = append(cleanedCIDRs, cleanCIDR)
+	}
+
 	h.nfName = fmt.Sprintf("nf-handler-%s", uuid)
 
 	nf := &csiaddonsv1alpha1.NetworkFence{
@@ -127,7 +139,7 @@ func (h *NetworkFenceHandler) ApplyFence(ctx context.Context, targets []string) 
 		Spec: csiaddonsv1alpha1.NetworkFenceSpec{
 			NetworkFenceClassName: h.nfcName,
 			FenceState:            csiaddonsv1alpha1.Fenced,
-			Cidrs:                 targets,
+			Cidrs:                 cleanedCIDRs,
 		},
 	}
 
@@ -191,16 +203,16 @@ func (h *NetworkFenceHandler) RemoveFence(ctx context.Context) error {
 		return fmt.Errorf("update NetworkFence to Unfenced: %w", err)
 	}
 
-	// 2. Poll Status.Result until Succeeded (timeout 60s, poll 1s)
-	confirmTimeout := time.NewTimer(60 * time.Second)
+	// 2. Poll Status.Result until Succeeded (timeout 120s, poll 2s) - aligned with DeleteNetworkFenceWithCleanup
+	confirmTimeout := time.NewTimer(120 * time.Second)
 	defer confirmTimeout.Stop()
-	confirmTicker := time.NewTicker(1 * time.Second)
+	confirmTicker := time.NewTicker(2 * time.Second)
 	defer confirmTicker.Stop()
 
 	for {
 		select {
 		case <-confirmTimeout.C:
-			return fmt.Errorf("timeout: NetworkFence did not complete unfence within 60s")
+			return fmt.Errorf("timeout: NetworkFence did not complete unfence within 120s")
 		case <-confirmTicker.C:
 			nfCurrent := &csiaddonsv1alpha1.NetworkFence{}
 			if err := h.config.Client.Get(ctx, client.ObjectKey{Namespace: h.namespace, Name: h.nfName}, nfCurrent); err != nil {
@@ -211,8 +223,9 @@ func (h *NetworkFenceHandler) RemoveFence(ctx context.Context) error {
 			// Check operation result and state
 			if nfCurrent.Status.Result == csiaddonsv1alpha1.FencingOperationResultSucceeded &&
 				nfCurrent.Spec.FenceState == csiaddonsv1alpha1.Unfenced {
-				// Wait 5s for storage to recover
-				time.Sleep(5 * time.Second)
+				// 3. Allow infrastructure time to detect connectivity restoration (aligned with DeleteNetworkFenceWithCleanup)
+				// After unfencing, RBD mirror needs time to detect connectivity and process state updates
+				time.Sleep(3 * time.Second)
 				return nil
 			}
 
@@ -309,4 +322,114 @@ func (h *NetworkFenceHandler) DiscoverFenceTargets(ctx context.Context) []string
 	// This runs the same chain as L1-E-003:
 	// FENCE_CIDRS env → CSIAddonsNode status → node IPs (from primary cluster) → none
 	return DiscoverFenceCIDRsForNetworkFence(ctx, h.config.Client, h.provisioner, discoveryClassName)
+}
+
+// DiscoverFenceTargetsForClient discovers fence targets for NetworkFence on a specific client.
+// Accepts a client parameter to discover targets for that specific cluster.
+// This is useful when you need to discover targets for the peer cluster or a specific instance.
+func (h *NetworkFenceHandler) DiscoverFenceTargetsForClient(ctx context.Context, targetClient client.Client) []string {
+	// Use a deterministic NetworkFenceClassName for discovery
+	discoveryClassName := "nfc-handler-discovery"
+
+	// For the given client, use full discovery chain
+	// FENCE_CIDRS env → CSIAddonsNode status → node IPs → none
+	return DiscoverFenceCIDRsForNetworkFence(ctx, targetClient, h.provisioner, discoveryClassName)
+}
+
+// stripPort removes the port from a CIDR notation string if present.
+// Supports IPv4 (CIDR:port) and IPv6 ([IP]/mask:port) formats.
+// Returns the CIDR without port, or an error if the input is invalid.
+func stripPort(cidr string) (string, error) {
+	if cidr == "" {
+		return "", fmt.Errorf("empty CIDR string")
+	}
+
+	// Check if this is IPv6 with brackets format: [ip]/mask:port or [ip]/mask
+	if strings.HasPrefix(cidr, "[") {
+		closeIdx := strings.Index(cidr, "]")
+		if closeIdx == -1 {
+			return "", fmt.Errorf("invalid IPv6 CIDR format: missing closing bracket")
+		}
+
+		// Extract everything after the bracket up to potential port
+		afterBracket := cidr[closeIdx+1:]
+
+		// Look for /mask and optional :port
+		slashIdx := strings.Index(afterBracket, "/")
+		if slashIdx == -1 {
+			// IPv6 without mask (malformed)
+			return "", fmt.Errorf("invalid CIDR format: IPv6 must include netmask")
+		}
+
+		// Get everything up to and including the mask
+		mask := afterBracket[slashIdx:]
+		maskEnd := len(mask)
+
+		// Check if there's a port after the mask (look for :)
+		portIdx := strings.Index(mask, ":")
+		if portIdx != -1 {
+			// Found port, remove it
+			maskEnd = portIdx
+		}
+
+		// Reconstruct: [ip] + /mask (without port)
+		return cidr[:closeIdx+1] + mask[:maskEnd], nil
+	}
+
+	// IPv4 format: could be just "ip", "ip/mask", "ip:port", or "ip/mask:port"
+	// Find the position of "/" to separate network from port
+	slashIdx := strings.Index(cidr, "/")
+	if slashIdx == -1 {
+		// No netmask, possibly plain IP with or without port
+		// Find colon that indicates port (not part of IPv6)
+		colonIdx := strings.LastIndex(cidr, ":")
+		if colonIdx > 0 {
+			// Check if what follows is a port number
+			potential := cidr[colonIdx+1:]
+			isPort := true
+			for _, ch := range potential {
+				if ch < '0' || ch > '9' {
+					isPort = false
+					break
+				}
+			}
+			if isPort {
+				return cidr[:colonIdx], nil
+			}
+		}
+		return cidr, nil
+	}
+
+	// Has netmask: ip/mask or ip/mask:port
+	// Look for port after the mask
+	portIdx := strings.Index(cidr[slashIdx:], ":")
+	if portIdx != -1 {
+		// Found port, return up to it
+		return cidr[:slashIdx+portIdx], nil
+	}
+
+	// No port found
+	return cidr, nil
+}
+
+// parseCIDR parses and validates a CIDR string (IPv4 or IPv6).
+// Returns the parsed CIDR network, or an error if invalid.
+func parseCIDR(cidr string) (interface{}, error) {
+	if cidr == "" {
+		return nil, fmt.Errorf("empty CIDR string")
+	}
+
+	// Strip any port before parsing
+	cleanCIDR, err := stripPort(cidr)
+	if err != nil {
+		return nil, err
+	}
+
+	// Parse using net.ParseCIDR
+	_, ipNet, err := net.ParseCIDR(cleanCIDR)
+	if err != nil {
+		return nil, fmt.Errorf("invalid CIDR: %w", err)
+	}
+
+	return ipNet, nil
 }

@@ -21,6 +21,8 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 // FaultInjectionHandler provides a unified, test-friendly API for network fault injection.
@@ -133,6 +135,24 @@ type FaultInjectionHandler interface {
 	// Handlers will use callback functions passed during handler construction, or call discovery
 	// functions from the replication test helpers directly (via dynamic import/interface).
 	DiscoverFenceTargets(ctx context.Context) []string
+
+	// DiscoverFenceTargetsForClient discovers fence targets for a specific client.
+	// This method accepts a client parameter to discover targets for that client (rather than
+	// automatically choosing based on full-DR mode detection or internal state).
+	// Useful when you need to discover targets for the peer cluster, local cluster, or a specific instance.
+	//
+	// For iptables: Discovers backend service IPs/CIDRs for the given client
+	// For networkfence: Discovers node IPs for the given client
+	// Falls back through FENCE_CIDRS env → service backends/node IPs → auto-discovery → none
+	// Returns empty list if nothing found.
+	//
+	// Parameters:
+	//   - ctx: Context for the operation with timeout/cancellation
+	//   - client: Kubernetes client for the cluster to discover targets from
+	//
+	// Returns:
+	//   - []string: List of target CIDRs/IPs for the given client's cluster
+	DiscoverFenceTargetsForClient(ctx context.Context, client client.Client) []string
 }
 
 // NewFaultInjectionHandler creates a new FaultInjectionHandler based on the E2E_FAULT_INJECTOR
@@ -203,5 +223,10 @@ func (h *NoOpHandler) Cleanup(ctx context.Context) error {
 
 // DiscoverFenceTargets for no-op handler is a no-op; returns empty list (causing test to skip).
 func (h *NoOpHandler) DiscoverFenceTargets(ctx context.Context) []string {
+	return nil
+}
+
+// DiscoverFenceTargetsForClient for no-op handler is a no-op; returns empty list (causing test to skip).
+func (h *NoOpHandler) DiscoverFenceTargetsForClient(ctx context.Context, client client.Client) []string {
 	return nil
 }

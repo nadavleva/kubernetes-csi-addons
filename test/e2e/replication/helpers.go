@@ -1277,8 +1277,10 @@ func collectServiceBackendIPsWithPorts(ctx context.Context, c client.Client, key
 	return result
 }
 
-// ipPortToCIDR converts "IP:port" or plain IP to "IP/MASK:port" format.
-// Examples: "192.168.1.10:6800" -> "192.168.1.10/32:6800", "192.168.1.10" -> "192.168.1.10/32"
+// ipPortToCIDR converts "IP:port" or plain IP to "IP/MASK" format.
+// For iptables: "192.168.1.10:6800" -> "192.168.1.10/32:6800" (port prevents fencing entire node)
+// For plain IPs: "192.168.1.10" -> "192.168.1.10/32"
+// Note: NetworkFence handlers will strip the port before fencing (operates at storage layer)
 func ipPortToCIDR(ipPort string) string {
 	// Check if port is present
 	if idx := strings.LastIndex(ipPort, ":"); idx > 0 && ipPort[0:idx] != "[" { // [ipv6]:port case
@@ -1288,6 +1290,7 @@ func ipPortToCIDR(ipPort string) string {
 		if cidr == "" {
 			return ""
 		}
+		// Keep port in CIDR format (needed for iptables to avoid blocking entire node)
 		return cidr + port
 	}
 
@@ -1295,21 +1298,29 @@ func ipPortToCIDR(ipPort string) string {
 	return ipToFenceCIDR(ipPort)
 }
 
-// filterEndpointIPsWithPortsToCIDRs filters IP:port pairs, excluding node IPs and converting to "IP/MASK:port" format.
+// filterEndpointIPsWithPortsToCIDRs filters IP:port pairs, excluding node IPs without ports.
+// When IP:port is specified (service-specific), allow node IPs because:
+// - Ports target specific services, not general node traffic (safe for iptables)
+// - NetworkFence operates at storage driver layer, not network layer (node IP doesn't matter)
 func filterEndpointIPsWithPortsToCIDRs(ipPorts []string, nodeIPs map[string]struct{}) []string {
 	seen := make(map[string]struct{})
 	var out []string
 	for _, ipPort := range ipPorts {
 		// Extract IP from "IP:port" format
 		ip := ipPort
+		hasPort := false
 		if idx := strings.LastIndex(ipPort, ":"); idx > 0 && ipPort[0:idx] != "[" {
 			ip = ipPort[0:idx]
+			hasPort = true
 		}
 
-		// Skip if IP matches a node InternalIP
-		if _, onNode := nodeIPs[ip]; onNode {
-			Logf("[DEBUG]", "filterEndpointIPsWithPorts: skip %s (IP %s matches node InternalIP — avoids fencing apiserver/kubelet host)", ipPort, ip)
-			continue
+		// Skip if IP matches a node InternalIP, BUT ONLY if there's no port
+		// When port is specified (IP:port), it's a service-specific target and safe to use even on nodes
+		if !hasPort {
+			if _, onNode := nodeIPs[ip]; onNode {
+				Logf("[DEBUG]", "filterEndpointIPsWithPorts: skip %s (IP %s matches node InternalIP — avoids fencing apiserver/kubelet host)", ipPort, ip)
+				continue
+			}
 		}
 
 		// Convert to CIDR format
