@@ -923,17 +923,17 @@ var _ = Describe("PromoteVolumeReplication", func() {
 			}
 
 			// Verify connectivity is restored
-			var lastUnfenceVerifyReason004 string
+			var unfenceFailReason string
 			Eventually(func() bool {
-				lastUnfenceVerifyReason004 = ""
+				unfenceFailReason = ""
 				for _, cidr := range cidrs {
 					connected, err := faultProvider.VerifyConnectivity(ctx, cidr, false, fenceBaselineRef(fenceBaselines, cidr))
 					if err != nil {
-						lastUnfenceVerifyReason004 = fmt.Sprintf("VerifyConnectivity failed for %s: %v", cidr, err)
+						unfenceFailReason = fmt.Sprintf("VerifyConnectivity failed for %s: %v", cidr, err)
 						return false
 					}
 					if !connected {
-						lastUnfenceVerifyReason004 = fmt.Sprintf(
+						unfenceFailReason = fmt.Sprintf(
 							"probes for %s do not match reachable baseline yet after unfence (see [DR2] VerifyConnectivity logs above)",
 							cidr)
 						return false
@@ -942,7 +942,7 @@ var _ = Describe("PromoteVolumeReplication", func() {
 				return true
 			}, 2*time.Minute, 10*time.Second).Should(BeTrue(),
 				"L1-PROM-004: after unfence, DR2 connectivity jobs must match pre-fence reachability within 2m (CIDRs %v). %s",
-				cidrs, lastUnfenceVerifyReason004)
+				cidrs, unfenceFailReason)
 
 			By("[DR2] Waiting for RBD mirror and cluster to recover VR health (Degraded=False)")
 			Eventually(func() bool {
