@@ -289,6 +289,7 @@ var _ = Describe("ResyncVolumeReplication", func() {
 		It("L1-RSYNC-003: resync with secondary network-fenced (split-brain), expect resync completes after fence removal", func() {
 			By("L1-RSYNC-003: Create primary and secondary, apply NetworkFence, resolve, then resync")
 			SkipIfNotFullDR("L1-RSYNC-003", "requires two clusters (DR1_CONTEXT and DR2_CONTEXT)")
+			// L1-RSYNC-003 requires NetworkFence CSI addon; use E2E_FAULT_INJECTOR=networkfence to run this test
 			if !IsNetworkFenceSupportAvailable() {
 				Skip("L1-RSYNC-003: NetworkFence not supported on this setup")
 			}
@@ -389,10 +390,10 @@ var _ = Describe("ResyncVolumeReplication", func() {
 		})
 	})
 
-	Describe("L1-RSYNC-003-A: Graceful degradation and recovery with FaultInjectionHandler", func() {
-		It("L1-RSYNC-003-A: fault injection causes degradation, removal restores health (works with all fault injectors)", func() {
-			By("L1-RSYNC-003-A: Create primary/secondary, apply fault injection to secondary, verify degradation then recovery")
-			SkipIfNotFullDR("L1-RSYNC-003-A", "requires two clusters (DR1_CONTEXT and DR2_CONTEXT)")
+	Describe("L1-RSYNC-006: Graceful degradation and recovery with FaultInjectionHandler", func() {
+		It("L1-RSYNC-006: fault injection causes degradation, removal restores health (works with all fault injectors)", func() {
+			By("L1-RSYNC-006: Create primary/secondary, apply fault injection to secondary, verify degradation then recovery")
+			SkipIfNotFullDR("L1-RSYNC-006", "requires two clusters (DR1_CONTEXT and DR2_CONTEXT)")
 
 			cDR1 := GetK8sClientForCluster(ClusterDR1)
 			cDR2 := GetK8sClientForCluster(ClusterDR2)
@@ -408,7 +409,7 @@ var _ = Describe("ResyncVolumeReplication", func() {
 
 			// Check if fault injection is available before creating resources
 			if !IsNetworkFenceSupportAvailable() && !helpers.HasPrivilegedDaemonSetSupport(ctx, cDR2) {
-				Skip("L1-RSYNC-003-A requires either NetworkFence support or privileged DaemonSet capabilities for iptables fault injection")
+				Skip("L1-RSYNC-006 requires either NetworkFence support or privileged DaemonSet capabilities for iptables fault injection")
 			}
 
 			// Create handler early to discover targets before creating VRs
@@ -483,11 +484,11 @@ var _ = Describe("ResyncVolumeReplication", func() {
 				DeleteNamespace(cleanupCtx, cDR2, ns2)
 			})
 
-			By("L1-RSYNC-003-A: Applying fault injection to secondary (ports blocked)")
+			By("L1-RSYNC-006: Applying fault injection to secondary (ports blocked)")
 			Expect(handler.ApplyFence(ctx, targets)).To(Succeed())
-			_, _ = fmt.Fprintf(GinkgoWriter, "  [L1-RSYNC-003-A] Fault injection applied for targets: %v\n", targets)
+			_, _ = fmt.Fprintf(GinkgoWriter, "  [L1-RSYNC-006] Fault injection applied for targets: %v\n", targets)
 
-			By("L1-RSYNC-003-A: Verifying secondary VR degrades gracefully (error state, but node still reachable)")
+			By("L1-RSYNC-006: Verifying secondary VR degrades gracefully (error state, but node still reachable)")
 			Eventually(func() bool {
 				_ = cDR2.Get(ctx, client.ObjectKeyFromObject(vrDR2), vrDR2)
 				_, _ = fmt.Fprintf(GinkgoWriter, "  [DR2][VR] after fault injection: %s\n", FormatVRStatus(vrDR2))
@@ -496,11 +497,11 @@ var _ = Describe("ResyncVolumeReplication", func() {
 			}, 30*time.Second, 2*time.Second).Should(BeTrue(),
 				"Secondary VR should show error after fault injection applied (graceful degradation)")
 
-			By("L1-RSYNC-003-A: Removing fault injection from secondary")
+			By("L1-RSYNC-006: Removing fault injection from secondary")
 			Expect(handler.RemoveFence(ctx)).To(Succeed())
-			_, _ = fmt.Fprintf(GinkgoWriter, "  [L1-RSYNC-003-A] Fault injection removed for targets: %v\n", targets)
+			_, _ = fmt.Fprintf(GinkgoWriter, "  [L1-RSYNC-006] Fault injection removed for targets: %v\n", targets)
 
-			By("L1-RSYNC-003-A: Verifying secondary VR is responsive after unfence")
+			By("L1-RSYNC-006: Verifying secondary VR is responsive after unfence")
 			// After unfencing, VR may take time to fully recover due to RBD mirror stabilization.
 			// We verify that VR is responsive (fetch succeeds) rather than demanding immediate health recovery.
 			// In production, administrators would typically wait for stabilization or trigger explicit resync.
