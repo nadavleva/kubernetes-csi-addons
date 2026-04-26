@@ -397,6 +397,9 @@ var _ = Describe("PromoteVolumeReplication", func() {
 	Describe("L1-PROM-003: Promote secondary to primary with peer unreachable (force=false)", func() {
 		It("L1-PROM-003: fence peer cluster → promote fails → unfence → promote succeeds", func() {
 			By("Starting L1-PROM-003: Promote secondary to primary with peer unreachable (force=false)")
+			// NOTE: L1-PROM-003 uses the deprecated PeerFenceProvider API (low-level fault injection).
+			// L1-PROM-003-A is the refactored version using the unified FaultInjectionHandler API.
+			// TODO: Remove L1-PROM-003 after all tests are converted to use FaultInjectionHandler.
 			SkipIfNotFullDR("L1-PROM-003", "requires two clusters (DR1_CONTEXT and DR2_CONTEXT)")
 
 			cDR1 := GetK8sClientForCluster(ClusterDR1)
@@ -616,6 +619,168 @@ var _ = Describe("PromoteVolumeReplication", func() {
 				"L1-PROM-003: VR state must be Primary or Unknown after unfence and successful promote, got %q", vrDR2.Status.State)
 			Expect(hasReplicationSuccessCondition(vrDR2)).To(BeTrue(),
 				"L1-PROM-003: VR must have Replicating or Completed condition after successful promote")
+		})
+	})
+
+	Describe("L1-PROM-003-A: Promote secondary to primary with peer unreachable (unified FaultInjectionHandler)", func() {
+		It("L1-PROM-003-A: fence peer cluster → promote fails → unfence → promote succeeds (using FaultInjectionHandler)", func() {
+			By("Starting L1-PROM-003-A: Promote secondary to primary with peer unreachable (unified handler)")
+			SkipIfNotFullDR("L1-PROM-003-A", "requires two clusters (DR1_CONTEXT and DR2_CONTEXT)")
+
+			cDR1 := GetK8sClientForCluster(ClusterDR1)
+			cDR2 := GetK8sClientForCluster(ClusterDR2)
+
+			nsName := UniqueNamespace()
+			By("Creating namespace on both DR1 and DR2")
+			ns1 := CreateNamespace(ctx, cDR1, nsName)
+			ns2 := CreateNamespace(ctx, cDR2, nsName)
+
+			secretName, secretNs := ReplicationSecretRef(ctx, cDR1, env, nsName)
+
+			By("Creating primary PVC and VR on DR1")
+			pvcDR1 := CreatePVC(ctx, cDR1, nsName, "pvc-dr1-prom-003a", env.StorageClass, "1Gi", func(p *corev1.PersistentVolumeClaim) {
+				_, _ = fmt.Fprintf(GinkgoWriter, "  [DR1][PVC] %s\n", FormatPVCStatus(p))
+			})
+			vrcName := "vrc-prom-003a-" + nsName
+			vrcDR1 := CreateVolumeReplicationClass(ctx, cDR1, vrcName, env.Provisioner, secretName, secretNs, MirroringModeSnapshot)
+			vrDR1 := CreateVolumeReplication(ctx, cDR1, nsName, "vr-dr1-prom-003a", vrcName, pvcDR1.Name, replicationv1alpha1.Primary)
+
+			By("Waiting for primary VR on DR1 to reach Replicating=True")
+			WaitForVolumeReplicationReplicatingOrCompleted(ctx, cDR1, vrDR1, func(v *replicationv1alpha1.VolumeReplication) {
+				_, _ = fmt.Fprintf(GinkgoWriter, "  [DR1][VR] %s\n", FormatVRStatus(v))
+			})
+
+			By("Creating secondary PVC and VR on DR2")
+			pvcDR2, pvDR2 := CreateSecondaryPVCFromPrimary(ctx, cDR1, cDR2, pvcDR1, nsName, "pvc-dr2-prom-003a", func(p *corev1.PersistentVolumeClaim) {
+				_, _ = fmt.Fprintf(GinkgoWriter, "  [DR2][PVC] %s\n", FormatPVCStatus(p))
+			})
+			vrcDR2 := CreateVolumeReplicationClass(ctx, cDR2, vrcName, env.Provisioner, secretName, secretNs, MirroringModeSnapshot)
+			vrDR2 := CreateVolumeReplication(ctx, cDR2, nsName, "vr-dr2-prom-003a", vrcName, pvcDR2.Name, replicationv1alpha1.Secondary)
+
+			By("Waiting for secondary VR on DR2 to reach Replicating=True")
+			WaitForVolumeReplicationReplicatingOrCompleted(ctx, cDR2, vrDR2, func(v *replicationv1alpha1.VolumeReplication) {
+				_, _ = fmt.Fprintf(GinkgoWriter, "  [DR2][VR] %s\n", FormatVRStatus(v))
+			})
+
+			// 1. Create handler on DR2 with peer client DR1 for proper discovery
+			faultConfig := helpers.FaultInjectionConfig{
+				Client:     cDR2,
+				RESTConfig: GetRESTConfigDR2(),
+				Namespace:  nsName,
+				ProviderParams: map[string]string{
+					"provisioner":     env.Provisioner,
+					"cluster_context": "DR2",
+					"image":           helpers.DefaultIptablesImageWithRegistry,
+					"secretName":      secretName,
+					"secretNamespace": secretNs,
+				},
+			}
+			if IsFullDRMode() {
+				faultConfig.PeerClient = cDR1
+			}
+
+			handler, err := helpers.NewFaultInjectionHandler(ctx, faultConfig)
+			Expect(err).NotTo(HaveOccurred(), "Failed to create FaultInjectionHandler")
+
+			// 2. Check if fault injection is supported
+			supported, reason := handler.IsSupported(ctx)
+			if !supported {
+				Skip("L1-PROM-003-A: fault injection not supported: " + reason)
+			}
+
+			// 3. Discover targets FOR DR1 using the peer client (validates handler properly discovers for specific client)
+			By("[DR2] Discovering fence targets FOR DR1 cluster using DiscoverFenceTargetsForClient(ctx, cDR1)")
+			targets := handler.DiscoverFenceTargetsForClient(ctx, cDR1)
+			if len(targets) == 0 {
+				Skip("L1-PROM-003-A: could not discover targets for DR1; set FENCE_CIDRS or FENCE_PEER_SERVICES/FENCE_TARGET_SERVICES")
+			}
+			Logf("[TEST]", "L1-PROM-003-A fence targets for DR1: %v (handler will apply based on injector type)", targets)
+
+			// 4. Register cleanup (handler cleanup is called in deferred cleanup)
+			DeferCleanup(func() {
+				cleanupCtx := context.Background()
+				_ = handler.Cleanup(cleanupCtx)
+				DeleteVolumeReplicationWithCleanup(cleanupCtx, cDR2, vrDR2)
+				DeleteVolumeReplicationClassWithCleanup(cleanupCtx, cDR2, vrcDR2)
+				DeletePVCWithCleanup(cleanupCtx, cDR2, pvcDR2)
+				DeletePV(cleanupCtx, cDR2, pvDR2)
+				DeleteVolumeReplicationWithCleanup(cleanupCtx, cDR1, vrDR1)
+				DeleteVolumeReplicationClassWithCleanup(cleanupCtx, cDR1, vrcDR1)
+				DeletePVCWithCleanup(cleanupCtx, cDR1, pvcDR1)
+				DeleteNamespace(cleanupCtx, cDR1, ns1)
+				DeleteNamespace(cleanupCtx, cDR2, ns2)
+			})
+
+			// 5. Apply fault injection (handler validates fence is active internally)
+			By(fmt.Sprintf("[DR2] Applying fault injection to targets: %v (handler validates fence is active)", targets))
+			Expect(handler.ApplyFence(ctx, targets)).To(Succeed(), "handler.ApplyFence")
+
+			// 6. Attempt to promote secondary to primary while peer is fenced (force=false; should fail)
+			By("[DR2] Attempting to promote secondary to primary while peer is fenced (force=false; should fail)")
+			err = cDR2.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrDR2.Name}, vrDR2)
+			Expect(err).NotTo(HaveOccurred())
+			vrDR2.Spec.ReplicationState = replicationv1alpha1.Primary
+			err = cDR2.Update(ctx, vrDR2)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("[DR2] Waiting for VR to report error (FailedToPromote or peer unreachable)")
+			WaitForVolumeReplicationErrorWithTimeout(ctx, cDR2, vrDR2, quickErrorTimeout)
+			err = cDR2.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrDR2.Name}, vrDR2)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Assertions: L1-PROM-003-A — promote with peer down (force=false) fails")
+			Expect(hasVolumeReplicationErrorCondition(vrDR2)).To(BeTrue(),
+				"L1-PROM-003-A: VR with fenced peer must have error condition (message: %q)", vrDR2.Status.Message)
+			Expect(vrDR2.Status.State).NotTo(Equal(replicationv1alpha1.PrimaryState),
+				"L1-PROM-003-A: VR state should not change to Primary when peer is unreachable with force=false")
+
+			// 7. Remove fault injection (handler validates connectivity is restored internally)
+			By("[DR2] Removing fault injection (handler validates connectivity is restored)")
+			Expect(handler.RemoveFence(ctx)).To(Succeed(), "handler.RemoveFence")
+
+			// 8. Wait for RBD mirror and cluster to recover VR health
+			By("[DR2] Waiting for RBD mirror and cluster to recover VR health (Degraded=False)")
+			Eventually(func() bool {
+				err := cDR2.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrDR2.Name}, vrDR2)
+				if err != nil {
+					return false
+				}
+				// Check that VR is no longer degraded (Degraded=False)
+				for _, cond := range vrDR2.Status.Conditions {
+					if cond.Type == "Degraded" {
+						isHealthy := cond.Status == metav1.ConditionFalse
+						if isHealthy {
+							_, _ = fmt.Fprintf(GinkgoWriter, "  [DR2][VR recovered] %s\n", FormatVRStatus(vrDR2))
+						}
+						return isHealthy
+					}
+				}
+				return false
+			}, 10*time.Minute, 10*time.Second).Should(BeTrue(),
+				"VR health should recover (Degraded=False) after unfencing within 10 minutes")
+
+			// 9. Wait for controller to retry and promote to succeed
+			By("[DR2] Waiting for controller to retry and promote to succeed")
+			WaitForVolumeReplicationReplicatingOrCompleted(ctx, cDR2, vrDR2, func(v *replicationv1alpha1.VolumeReplication) {
+				_, _ = fmt.Fprintf(GinkgoWriter, "  [DR2][VR after unfence] %s\n", FormatVRStatus(v))
+			})
+			err = cDR2.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrDR2.Name}, vrDR2)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("[DR2] Waiting for VR state to transition to Primary (state change may be async after operation succeeds)")
+			Eventually(func() (replicationv1alpha1.State, error) {
+				err := cDR2.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrDR2.Name}, vrDR2)
+				return vrDR2.Status.State, err
+			}, 2*time.Minute, 5*time.Second).Should(Or(Equal(replicationv1alpha1.PrimaryState), Equal(replicationv1alpha1.UnknownState)),
+				"VR state should transition to Primary or Unknown after promote operation")
+			err = cDR2.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrDR2.Name}, vrDR2)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Assertions: L1-PROM-003-A — promote succeeds after unfence")
+			Expect(vrDR2.Status.State).To(Or(Equal(replicationv1alpha1.PrimaryState), Equal(replicationv1alpha1.UnknownState)),
+				"L1-PROM-003-A: VR state must be Primary or Unknown after unfence and successful promote, got %q", vrDR2.Status.State)
+			Expect(hasReplicationSuccessCondition(vrDR2)).To(BeTrue(),
+				"L1-PROM-003-A: VR must have Replicating or Completed condition after successful promote")
 		})
 	})
 
