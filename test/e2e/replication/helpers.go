@@ -551,6 +551,58 @@ func HasVolumeReplicationErrorCondition(vr *replicationv1alpha1.VolumeReplicatio
 	return hasVolumeReplicationErrorCondition(vr)
 }
 
+// TriggerVolumeReplicationResync triggers a manual resync of a VolumeReplication by setting
+// spec.replicationState = "resync" and waiting for the resync to complete (Replicating=True or Completed=True).
+// Used after network recovery/unfencing to accelerate RBD mirror recovery without waiting for passive polling interval.
+// Timeout: uses getReplicationPollTimeout() (default 300s from REPLICATION_POLL_TIMEOUT or env).
+// If onPoll is non-nil, it is called after each poll so tests can log progress.
+// IMPORTANT: Fetches latest VR state before updating and monitors for error conditions during resync.
+func TriggerVolumeReplicationResync(ctx context.Context, c client.Client, vr *replicationv1alpha1.VolumeReplication, onPoll func(*replicationv1alpha1.VolumeReplication)) {
+	key := client.ObjectKeyFromObject(vr)
+
+	// Fetch latest VR before update to ensure we have current state
+	err := c.Get(ctx, key, vr)
+	Expect(err).NotTo(HaveOccurred())
+
+	// Trigger resync by setting ReplicationState to Resync
+	vr.Spec.ReplicationState = replicationv1alpha1.Resync
+	err = c.Update(ctx, vr)
+	Expect(err).NotTo(HaveOccurred())
+
+	// Wait for resync to complete (Replicating=True or Completed=True)
+	// Also check for error conditions that indicate resync failed
+	timeout := getReplicationPollTimeout()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		// Fetch latest VR state to check progress
+		err := c.Get(ctx, key, vr)
+		if err != nil {
+			time.Sleep(pollInterval)
+			continue
+		}
+		if onPoll != nil {
+			onPoll(vr)
+		}
+
+		// Check for resync success (Replicating=True or Completed=True)
+		if hasReplicationSuccessCondition(vr) {
+			return // resync completed successfully
+		}
+
+		// Check for resync error conditions (e.g., RBD image not found, peer unreachable)
+		if hasVolumeReplicationErrorCondition(vr) {
+			ginkgo.Fail(fmt.Sprintf("VolumeReplication %s/%s resync failed with error: %s (state=%s, message=%q)",
+				vr.Namespace, vr.Name, vr.Status.State, vr.Status.State, vr.Status.Message))
+		}
+
+		time.Sleep(pollInterval)
+	}
+
+	// Timeout reached - use Ginkgo's Fail() for idiomatic test failure
+	ginkgo.Fail(fmt.Sprintf("VolumeReplication %s/%s resync did not complete within %v (state=%s, message=%q)",
+		vr.Namespace, vr.Name, timeout, vr.Status.State, vr.Status.Message))
+}
+
 // WaitForVolumeReplicationInfoWithStatus waits until GetVolumeReplicationInfo would report a specific status
 // (e.g., "healthy", "degraded", "syncing"). This is called via VR status polling and formatting for logging.
 // The status parameter is typically "healthy", "degraded", "syncing", "disconnected", or "error".

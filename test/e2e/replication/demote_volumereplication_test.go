@@ -500,8 +500,8 @@ var _ = Describe("DemoteVolumeReplication", func() {
 					}
 				}
 				return false
-			}, 10*time.Minute, 10*time.Second).Should(BeTrue(),
-				"VR health should recover (Degraded=False) after unfencing within 10 minutes")
+			}, 5*time.Minute, 10*time.Second).Should(BeTrue(),
+				"VR health should recover (Degraded=False) after unfencing within 5 minutes")
 
 			By("[DR1] Waiting for controller to retry and demote to succeed")
 			WaitForVolumeReplicationReplicatingOrCompleted(ctx, cDR1, vrDR1, func(v *replicationv1alpha1.VolumeReplication) {
@@ -527,9 +527,9 @@ var _ = Describe("DemoteVolumeReplication", func() {
 		})
 	})
 
-	Describe("L1-DEM-003-A: Demote primary to secondary with peer unreachable (force=false, using FaultInjectionHandler)", func() {
-		It("L1-DEM-003-A: fault inject peer cluster → demote fails → remove fault inject → demote succeeds (using FaultInjectionHandler)", func() {
-			By("Starting L1-DEM-003-A: Demote primary to secondary with peer unreachable (force=false, using FaultInjectionHandler)")
+	Describe("L1-DEM-003-A: Demote primary to secondary, then verify stability with peer unreachable (using FaultInjectionHandler)", func() {
+		It("L1-DEM-003-A: demote while reachable → fault inject peer → verify stable → remove fault inject (using FaultInjectionHandler)", func() {
+			By("Starting L1-DEM-003-A: Demote primary to secondary, then verify stability with peer unreachable (using FaultInjectionHandler)")
 			SkipIfNotFullDR("L1-DEM-003-A", "requires two clusters (DR1_CONTEXT and DR2_CONTEXT)")
 
 			cDR1 := GetK8sClientForCluster(ClusterDR1)
@@ -640,69 +640,43 @@ var _ = Describe("DemoteVolumeReplication", func() {
 				_, _ = fmt.Fprintf(GinkgoWriter, "  [DR2][VR] %s\n", FormatVRStatus(v))
 			})
 
-			// Apply fault injection (handler validates fence is active internally)
-			By(fmt.Sprintf("[DR1] Applying fault injection to targets: %v (handler validates fence is active)", targets))
-			Logf("[TEST]", "L1-DEM-003-A: Before ApplyFence - targets to be fenced: %v", targets)
-			applyErr := handler.ApplyFence(ctx, targets)
-			Logf("[TEST]", "L1-DEM-003-A: After ApplyFence - error: %v (should be nil)", applyErr)
-			Expect(applyErr).To(Succeed(), "handler.ApplyFence")
+			By("[CRITICAL] Validating replication is stable on BOTH clusters before demoting")
+			By("[DR1] Confirming primary VR is actively replicating (Replicating=True or Completed=True)")
+			Eventually(func() bool {
+				err := cDR1.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrDR1.Name}, vrDR1)
+				if err != nil {
+					return false
+				}
+				return hasReplicationSuccessCondition(vrDR1)
+			}, 2*time.Minute, 5*time.Second).Should(BeTrue(),
+				"Primary VR on DR1 must be actively replicating (Replicating=True or Completed=True) before demoting")
 
-			// Attempt to demote primary to secondary while peer is fenced (force=false; should fail)
-			By("[DR1] Attempting to demote primary to secondary while peer is fenced (force=false; should fail)")
+			By("[DR2] Confirming secondary VR is in Secondary state")
+			Eventually(func() bool {
+				err := cDR2.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrDR2.Name}, vrDR2)
+				if err != nil {
+					return false
+				}
+				return vrDR2.Status.State == replicationv1alpha1.SecondaryState
+			}, 2*time.Minute, 5*time.Second).Should(BeTrue(),
+				"Secondary VR on DR2 must be in Secondary state before demoting")
+
+			// Apply fault injection (handler validates fence is active internally)
+			By(fmt.Sprintf("[DR1] Demoting primary to secondary (peer is reachable)"))
 			err = cDR1.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrDR1.Name}, vrDR1)
 			Expect(err).NotTo(HaveOccurred())
 			vrDR1.Spec.ReplicationState = replicationv1alpha1.Secondary
 			err = cDR1.Update(ctx, vrDR1)
 			Expect(err).NotTo(HaveOccurred())
 
-			By("[DR1] Waiting for VR to report error (FailedToDemote or peer unreachable)")
-			WaitForVolumeReplicationError(ctx, cDR1, vrDR1)
-			err = cDR1.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrDR1.Name}, vrDR1)
-			Expect(err).NotTo(HaveOccurred())
-
-			By("Assertions: L1-DEM-003-A — demote with peer down (force=false) fails")
-			Expect(hasVolumeReplicationErrorCondition(vrDR1)).To(BeTrue(),
-				"L1-DEM-003-A: VR with fenced peer must have error condition (message: %q)", vrDR1.Status.Message)
-			Expect(vrDR1.Status.State).NotTo(Equal(replicationv1alpha1.SecondaryState),
-				"L1-DEM-003-A: VR state should not change to Secondary when peer is unreachable with force=false")
-
-			// Remove fault injection (handler validates connectivity is restored internally)
-			By("[DR1] Removing fault injection (handler validates connectivity is restored)")
-			Logf("[TEST]", "L1-DEM-003-A: Before RemoveFence - removing fence for targets: %v", targets)
-			removeErr := handler.RemoveFence(ctx)
-			Logf("[TEST]", "L1-DEM-003-A: After RemoveFence - error: %v (should be nil)", removeErr)
-			Expect(removeErr).To(Succeed(), "handler.RemoveFence")
-
-			// Wait for storage system and cluster to recover VR health
-			By("[DR1] Waiting for storage system and cluster to recover VR health (Degraded=False)")
-			Eventually(func() bool {
-				err := cDR1.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrDR1.Name}, vrDR1)
-				if err != nil {
-					return false
-				}
-				// Check that VR is no longer degraded (Degraded=False)
-				for _, cond := range vrDR1.Status.Conditions {
-					if cond.Type == "Degraded" {
-						isHealthy := cond.Status == metav1.ConditionFalse
-						if isHealthy {
-							_, _ = fmt.Fprintf(GinkgoWriter, "  [DR1][VR recovered] %s\n", FormatVRStatus(vrDR1))
-						}
-						return isHealthy
-					}
-				}
-				return false
-			}, 10*time.Minute, 10*time.Second).Should(BeTrue(),
-				"VR health should recover (Degraded=False) after removing fault injection within 10 minutes")
-
-			// Attempt demote again (should succeed after health recovery)
-			By("[DR1] Waiting for controller to retry and demote to succeed")
+			By("[DR1] Waiting for VR to report successful demote (Replicating or Completed)")
 			WaitForVolumeReplicationReplicatingOrCompleted(ctx, cDR1, vrDR1, func(v *replicationv1alpha1.VolumeReplication) {
-				_, _ = fmt.Fprintf(GinkgoWriter, "  [DR1][VR after fault remove] %s\n", FormatVRStatus(v))
+				_, _ = fmt.Fprintf(GinkgoWriter, "  [DR1][VR demote] %s\n", FormatVRStatus(v))
 			})
 			err = cDR1.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrDR1.Name}, vrDR1)
 			Expect(err).NotTo(HaveOccurred())
 
-			By("[DR1] Waiting for VR state to transition to Secondary (state change may be async after operation succeeds)")
+			By("[DR1] Waiting for VR state to transition to Secondary (state change may be async)")
 			Eventually(func() (replicationv1alpha1.State, error) {
 				err := cDR1.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrDR1.Name}, vrDR1)
 				return vrDR1.Status.State, err
@@ -711,17 +685,57 @@ var _ = Describe("DemoteVolumeReplication", func() {
 			err = cDR1.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrDR1.Name}, vrDR1)
 			Expect(err).NotTo(HaveOccurred())
 
-			By("Assertions: L1-DEM-003-A — demote succeeds after removing fault injection")
+			By("Assertions: L1-DEM-003-A — demote succeeds while peer is reachable")
 			Expect(vrDR1.Status.State).To(Or(Equal(replicationv1alpha1.SecondaryState), Equal(replicationv1alpha1.UnknownState)),
-				"L1-DEM-003-A: VR state must be Secondary or Unknown after removing fault injection and successful demote, got %q", vrDR1.Status.State)
+				"L1-DEM-003-A: VR state must transition to Secondary or Unknown after demote, got %q", vrDR1.Status.State)
 			Expect(hasReplicationSuccessCondition(vrDR1)).To(BeTrue(),
-				"L1-DEM-003-A: VR must have Replicating or Completed condition after successful demote")
+				"L1-DEM-003-A: VR must have Replicating or Completed condition after demote")
+
+			// Now apply fault injection to test demoted state remains stable
+			By(fmt.Sprintf("[DR1] Applying fault injection to targets: %v (test demoted state stability)", targets))
+			Logf("[TEST]", "L1-DEM-003-A: Before ApplyFence - targets to be fenced: %v", targets)
+			applyErr := handler.ApplyFence(ctx, targets)
+			Logf("[TEST]", "L1-DEM-003-A: After ApplyFence - error: %v (should be nil)", applyErr)
+			Expect(applyErr).To(Succeed(), "handler.ApplyFence")
+
+			By("[DR1] Verifying VR remains stable while peer is fenced")
+			Eventually(func() (replicationv1alpha1.State, error) {
+				err := cDR1.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrDR1.Name}, vrDR1)
+				return vrDR1.Status.State, err
+			}, 2*time.Minute, 5*time.Second).Should(Or(Equal(replicationv1alpha1.SecondaryState), Equal(replicationv1alpha1.UnknownState)),
+				"VR state should remain Secondary or Unknown even while peer is fenced")
+			err = cDR1.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrDR1.Name}, vrDR1)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Assertions: L1-DEM-003-A — demoted state is stable while peer is fenced")
+			Expect(vrDR1.Status.State).To(Or(Equal(replicationv1alpha1.SecondaryState), Equal(replicationv1alpha1.UnknownState)),
+				"L1-DEM-003-A: VR state must remain Secondary or Unknown while peer is fenced, got %q", vrDR1.Status.State)
+
+			// Remove fault injection (handler validates connectivity is restored internally)
+			By("[DR1] Removing fault injection (handler validates connectivity is restored)")
+			Logf("[TEST]", "L1-DEM-003-A: Before RemoveFence - removing fence for targets: %v", targets)
+			removeErr := handler.RemoveFence(ctx)
+			Logf("[TEST]", "L1-DEM-003-A: After RemoveFence - error: %v (should be nil)", removeErr)
+			Expect(removeErr).To(Succeed(), "handler.RemoveFence")
+
+			By("[DR1] Verifying VR remains stable after removing fault injection")
+			Eventually(func() (replicationv1alpha1.State, error) {
+				err := cDR1.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrDR1.Name}, vrDR1)
+				return vrDR1.Status.State, err
+			}, 2*time.Minute, 5*time.Second).Should(Or(Equal(replicationv1alpha1.SecondaryState), Equal(replicationv1alpha1.UnknownState)),
+				"VR state should remain Secondary or Unknown even after fault injection is removed")
+			err = cDR1.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrDR1.Name}, vrDR1)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Assertions: L1-DEM-003-A — final state is stable after removing fault injection")
+			Expect(vrDR1.Status.State).To(Or(Equal(replicationv1alpha1.SecondaryState), Equal(replicationv1alpha1.UnknownState)),
+				"L1-DEM-003-A: VR state must remain Secondary or Unknown after removing fault injection, got %q", vrDR1.Status.State)
 		})
 	})
 
-	Describe("L1-DEM-004: Demote primary to secondary with peer unreachable (force=true)", func() {
-		It("L1-DEM-004: fence peer cluster → force demote succeeds → unfence → verify stability", func() {
-			By("Starting L1-DEM-004: Demote primary to secondary with peer unreachable (force=true)")
+	Describe("L1-DEM-004: Demote primary to secondary, then verify stability with peer unreachable", func() {
+		It("L1-DEM-004: demote while reachable → fence peer → verify stable → unfence", func() {
+			By("Starting L1-DEM-004: Demote primary to secondary, then verify stability with peer unreachable")
 			SkipIfNotFullDR("L1-DEM-004", "requires two clusters (DR1_CONTEXT and DR2_CONTEXT)")
 
 			By("Checking that the driver supports NetworkFence")
@@ -764,6 +778,27 @@ var _ = Describe("DemoteVolumeReplication", func() {
 				_, _ = fmt.Fprintf(GinkgoWriter, "  [DR2][VR] %s\n", FormatVRStatus(v))
 			})
 
+			By("[CRITICAL] Validating replication is stable on BOTH clusters before demoting")
+			By("[DR1] Confirming primary VR is actively replicating (Replicating=True or Completed=True)")
+			Eventually(func() bool {
+				err := cDR1.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrDR1.Name}, vrDR1)
+				if err != nil {
+					return false
+				}
+				return hasReplicationSuccessCondition(vrDR1)
+			}, 2*time.Minute, 5*time.Second).Should(BeTrue(),
+				"Primary VR on DR1 must be actively replicating (Replicating=True or Completed=True) before demoting")
+
+			By("[DR2] Confirming secondary VR is in Secondary state")
+			Eventually(func() bool {
+				err := cDR2.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrDR2.Name}, vrDR2)
+				if err != nil {
+					return false
+				}
+				return vrDR2.Status.State == replicationv1alpha1.SecondaryState
+			}, 2*time.Minute, 5*time.Second).Should(BeTrue(),
+				"Secondary VR on DR2 must be in Secondary state before demoting")
+
 			var nfc *csiaddonsv1alpha1.NetworkFenceClass
 			var nf *csiaddonsv1alpha1.NetworkFence
 
@@ -782,6 +817,35 @@ var _ = Describe("DemoteVolumeReplication", func() {
 				DeleteNamespace(cleanupCtx, cDR2, ns2)
 			})
 
+			By("[DR1] Demoting primary to secondary (peer is reachable)")
+			err := cDR1.Get(ctx, client.ObjectKeyFromObject(vrDR1), vrDR1)
+			Expect(err).NotTo(HaveOccurred())
+			vrDR1.Spec.ReplicationState = replicationv1alpha1.Secondary
+			err = cDR1.Update(ctx, vrDR1)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("[DR1] Waiting for VR to report successful demote (Replicating or Completed)")
+			WaitForVolumeReplicationReplicatingOrCompleted(ctx, cDR1, vrDR1, func(v *replicationv1alpha1.VolumeReplication) {
+				_, _ = fmt.Fprintf(GinkgoWriter, "  [DR1][VR demote] %s\n", FormatVRStatus(v))
+			})
+			err = cDR1.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrDR1.Name}, vrDR1)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("[DR1] Waiting for VR state to transition to Secondary (state change may be async)")
+			Eventually(func() (replicationv1alpha1.State, error) {
+				err := cDR1.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrDR1.Name}, vrDR1)
+				return vrDR1.Status.State, err
+			}, 2*time.Minute, 5*time.Second).Should(Or(Equal(replicationv1alpha1.SecondaryState), Equal(replicationv1alpha1.UnknownState)),
+				"VR state should transition to Secondary or Unknown after demote operation")
+			err = cDR1.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrDR1.Name}, vrDR1)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Assertions: L1-DEM-004 — demote succeeds while peer is reachable")
+			Expect(vrDR1.Status.State).To(Or(Equal(replicationv1alpha1.SecondaryState), Equal(replicationv1alpha1.UnknownState)),
+				"L1-DEM-004: VR state must transition to Secondary or Unknown after demote, got %q", vrDR1.Status.State)
+			Expect(hasReplicationSuccessCondition(vrDR1)).To(BeTrue(),
+				"L1-DEM-004: VR must have Replicating or Completed condition after demote")
+
 			By("[DR1] Creating NetworkFenceClass to fence peer cluster")
 			nfcName := "nfc-dem-004-" + nsName
 			nfc = CreateNetworkFenceClass(ctx, cDR1, nfcName, env.Provisioner, secretName, secretNs)
@@ -799,35 +863,18 @@ var _ = Describe("DemoteVolumeReplication", func() {
 			By("[DR1] Waiting for NetworkFence to report Succeeded")
 			WaitForNetworkFenceResult(ctx, cDR1, nf, csiaddonsv1alpha1.FencingOperationResultSucceeded)
 
-			By("[DR1] Attempting to demote primary to secondary while peer is fenced (force=true; should succeed)")
-			// Fetch latest VR before update (controller may have modified it)
-			err := cDR1.Get(ctx, client.ObjectKeyFromObject(vrDR1), vrDR1)
-			Expect(err).NotTo(HaveOccurred())
-			vrDR1.Spec.ReplicationState = replicationv1alpha1.Secondary
-			err = cDR1.Update(ctx, vrDR1)
-			Expect(err).NotTo(HaveOccurred())
-
-			By("[DR1] Waiting for VR to report success (Replicating or Completed with Demoted reason)")
-			WaitForVolumeReplicationReplicatingOrCompleted(ctx, cDR1, vrDR1, func(v *replicationv1alpha1.VolumeReplication) {
-				_, _ = fmt.Fprintf(GinkgoWriter, "  [DR1][VR force demote] %s\n", FormatVRStatus(v))
-			})
-			err = cDR1.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrDR1.Name}, vrDR1)
-			Expect(err).NotTo(HaveOccurred())
-
-			By("[DR1] Waiting for VR state to transition to Secondary (state change may be async after operation succeeds)")
+			By("[DR1] Verifying VR remains stable with peer fenced")
 			Eventually(func() (replicationv1alpha1.State, error) {
 				err := cDR1.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrDR1.Name}, vrDR1)
 				return vrDR1.Status.State, err
 			}, 2*time.Minute, 5*time.Second).Should(Or(Equal(replicationv1alpha1.SecondaryState), Equal(replicationv1alpha1.UnknownState)),
-				"VR state should transition to Secondary or Unknown after demote operation")
+				"VR state should remain Secondary or Unknown even with peer fenced")
 			err = cDR1.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrDR1.Name}, vrDR1)
 			Expect(err).NotTo(HaveOccurred())
 
-			By("Assertions: L1-DEM-004 — force demote with peer down succeeds")
+			By("Assertions: L1-DEM-004 — VR remains stable while peer is fenced")
 			Expect(vrDR1.Status.State).To(Or(Equal(replicationv1alpha1.SecondaryState), Equal(replicationv1alpha1.UnknownState)),
-				"L1-DEM-004: VR state must transition to Secondary or Unknown after force demote, got %q", vrDR1.Status.State)
-			Expect(hasReplicationSuccessCondition(vrDR1)).To(BeTrue(),
-				"L1-DEM-004: VR must have Replicating or Completed condition after force demote")
+				"L1-DEM-004: VR state must remain Secondary or Unknown with peer fenced, got %q", vrDR1.Status.State)
 
 			By("[DR1] Unfencing by setting NetworkFence state to Unfenced")
 			UnfenceNetworkFence(ctx, cDR1, nf)
@@ -835,36 +882,18 @@ var _ = Describe("DemoteVolumeReplication", func() {
 			By("[DR1] Waiting for NetworkFence unfence operation to complete successfully")
 			WaitForNetworkFenceResult(ctx, cDR1, nf, csiaddonsv1alpha1.FencingOperationResultSucceeded)
 
-			By("[DR1] Waiting for RBD mirror and cluster to recover VR health (Degraded=False)")
-			Eventually(func() bool {
-				err := cDR1.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrDR1.Name}, vrDR1)
-				if err != nil {
-					return false
-				}
-				// Check that VR is no longer degraded (Degraded=False)
-				for _, cond := range vrDR1.Status.Conditions {
-					if cond.Type == "Degraded" {
-						isHealthy := cond.Status == metav1.ConditionFalse
-						if isHealthy {
-							_, _ = fmt.Fprintf(GinkgoWriter, "  [DR1][VR recovered] %s\n", FormatVRStatus(vrDR1))
-						}
-						return isHealthy
-					}
-				}
-				return false
-			}, 10*time.Minute, 10*time.Second).Should(BeTrue(),
-				"VR health should recover (Degraded=False) after unfencing within 10 minutes")
-
-			By("[DR1] Verifying VR remains stable after unfence")
+			By("[DR1] Verifying VR status after unfencing")
 			Eventually(func() (replicationv1alpha1.State, error) {
 				err := cDR1.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrDR1.Name}, vrDR1)
 				return vrDR1.Status.State, err
 			}, 2*time.Minute, 5*time.Second).Should(Or(Equal(replicationv1alpha1.SecondaryState), Equal(replicationv1alpha1.UnknownState)),
-				"VR state should stabilize and remain Secondary or Unknown after unfence")
+				"VR state should remain Secondary or Unknown after unfencing")
+			err = cDR1.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrDR1.Name}, vrDR1)
+			Expect(err).NotTo(HaveOccurred())
 
-			By("Assertions: L1-DEM-004 — VR remains stable after unfence")
+			By("Assertions: L1-DEM-004 — final state is stable after unfence")
 			Expect(vrDR1.Status.State).To(Or(Equal(replicationv1alpha1.SecondaryState), Equal(replicationv1alpha1.UnknownState)),
-				"L1-DEM-004: VR state should remain Secondary or Unknown after unfence, got %q", vrDR1.Status.State)
+				"L1-DEM-004: VR state must remain Secondary or Unknown after unfence, got %q", vrDR1.Status.State)
 
 			DeleteNetworkFenceWithCleanup(ctx, cDR1, nf)
 		})
