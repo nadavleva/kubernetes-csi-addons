@@ -29,6 +29,7 @@ import (
 
 	csiaddonsv1alpha1 "github.com/csi-addons/kubernetes-csi-addons/api/csiaddons/v1alpha1"
 	replicationv1alpha1 "github.com/csi-addons/kubernetes-csi-addons/api/replication.storage/v1alpha1"
+	"github.com/csi-addons/kubernetes-csi-addons/test/e2e/helpers"
 )
 
 var _ = Describe("DemoteVolumeReplication", func() {
@@ -449,6 +450,7 @@ var _ = Describe("DemoteVolumeReplication", func() {
 			if len(cidrs) == 0 {
 				Skip("L1-DEM-003 could not get CIDRs: set FENCE_CIDRS, wait for CSI networkFenceClientStatus, or ensure peer cluster (DR2) has node InternalIPs for NetworkFence fallback")
 			}
+			Logf("[TEST]", "L1-DEM-003: Discovered %d fence targets FOR peer DR2: %v (using NetworkFence mechanism)", len(cidrs), cidrs)
 
 			nfName := "nf-dem-003-" + nsName
 			By("[DR1] Creating NetworkFence (Fenced) to block peer cluster access")
@@ -525,6 +527,198 @@ var _ = Describe("DemoteVolumeReplication", func() {
 		})
 	})
 
+	Describe("L1-DEM-003-A: Demote primary to secondary with peer unreachable (force=false, using FaultInjectionHandler)", func() {
+		It("L1-DEM-003-A: fault inject peer cluster → demote fails → remove fault inject → demote succeeds (using FaultInjectionHandler)", func() {
+			By("Starting L1-DEM-003-A: Demote primary to secondary with peer unreachable (force=false, using FaultInjectionHandler)")
+			SkipIfNotFullDR("L1-DEM-003-A", "requires two clusters (DR1_CONTEXT and DR2_CONTEXT)")
+
+			cDR1 := GetK8sClientForCluster(ClusterDR1)
+			cDR2 := GetK8sClientForCluster(ClusterDR2)
+
+			nsName := UniqueNamespace()
+			By("Creating namespace on both DR1 and DR2 (for secret lookup)")
+			ns1 := CreateNamespace(ctx, cDR1, nsName)
+			ns2 := CreateNamespace(ctx, cDR2, nsName)
+			// Create cleanup context for resources created before handler (namespaces, secrets)
+			cleanupCtx := context.Background()
+
+			DeferCleanup(func() {
+				DeleteNamespace(cleanupCtx, cDR1, ns1)
+				DeleteNamespace(cleanupCtx, cDR2, ns2)
+			})
+
+			secretName, secretNs := ReplicationSecretRef(ctx, cDR1, env, nsName)
+
+			// EARLY SUPPORT CHECK: Create handler, validate support, and discover targets BEFORE creating PVC/VR
+			// This saves significant time if handler or targets are not available
+			By("Creating FaultInjectionHandler to verify support")
+			faultConfig := helpers.FaultInjectionConfig{
+				Client:     cDR1,
+				RESTConfig: GetRESTConfig(),
+				Namespace:  nsName,
+				ProviderParams: map[string]string{
+					"provisioner":     env.Provisioner,
+					"cluster_context": "DR1",
+					"image":           helpers.DefaultIptablesImageWithRegistry,
+					"secretName":      secretName,
+					"secretNamespace": secretNs,
+				},
+			}
+			if IsFullDRMode() {
+				faultConfig.PeerClient = cDR2
+			}
+
+			handler, err := helpers.NewFaultInjectionHandler(ctx, faultConfig)
+			Expect(err).NotTo(HaveOccurred(), "Failed to create FaultInjectionHandler")
+
+			// Register handler cleanup
+			DeferCleanup(func() {
+				_ = handler.Cleanup(cleanupCtx)
+			})
+
+			By("Validating fault injection support before resource creation")
+			supported, reason := handler.IsSupported(ctx)
+			if !supported {
+				Skip("L1-DEM-003-A: fault injection not supported: " + reason)
+			}
+
+			By("Discovering fence targets FOR peer DR2 before resource creation")
+			targets := handler.DiscoverFenceTargetsForClient(ctx, cDR2)
+			if len(targets) == 0 {
+				Skip("L1-DEM-003-A: could not discover targets for peer DR2; set FENCE_CIDRS or FENCE_PEER_SERVICES/FENCE_TARGET_SERVICES")
+			}
+			Logf("[TEST]", "L1-DEM-003-A: [EARLY] Discovered %d targets FOR peer DR2: %v (handler created on DR1 with Client=DR1, PeerClient=DR2)", len(targets), targets)
+			Logf("[TEST]", "L1-DEM-003-A: [EARLY] Handler config validated - Client=DR1 (local), PeerClient=DR2 (peer target discovery) (IsFullDRMode=%v)", IsFullDRMode())
+
+			By("Creating primary PVC and VR on DR1")
+			pvcDR1 := CreatePVC(ctx, cDR1, nsName, "pvc-dr1-dem-003a", env.StorageClass, "1Gi", func(p *corev1.PersistentVolumeClaim) {
+				_, _ = fmt.Fprintf(GinkgoWriter, "  [DR1][PVC] %s\n", FormatPVCStatus(p))
+			})
+			DeferCleanup(func() {
+				DeletePVCWithCleanup(cleanupCtx, cDR1, pvcDR1)
+			})
+
+			vrcName := "vrc-dem-003a-" + nsName
+			vrcDR1 := CreateVolumeReplicationClass(ctx, cDR1, vrcName, env.Provisioner, secretName, secretNs, MirroringModeSnapshot)
+			DeferCleanup(func() {
+				DeleteVolumeReplicationClassWithCleanup(cleanupCtx, cDR1, vrcDR1)
+			})
+
+			vrDR1 := CreateVolumeReplication(ctx, cDR1, nsName, "vr-dr1-dem-003a", vrcName, pvcDR1.Name, replicationv1alpha1.Primary)
+			DeferCleanup(func() {
+				DeleteVolumeReplicationWithCleanup(cleanupCtx, cDR1, vrDR1)
+			})
+
+			By("Waiting for primary VR on DR1 to reach Replicating=True")
+			WaitForVolumeReplicationReplicatingOrCompleted(ctx, cDR1, vrDR1, func(v *replicationv1alpha1.VolumeReplication) {
+				_, _ = fmt.Fprintf(GinkgoWriter, "  [DR1][VR] %s\n", FormatVRStatus(v))
+			})
+
+			By("Creating secondary PVC and VR on DR2")
+			pvcDR2, pvDR2 := CreateSecondaryPVCFromPrimary(ctx, cDR1, cDR2, pvcDR1, nsName, "pvc-dr2-dem-003a", func(p *corev1.PersistentVolumeClaim) {
+				_, _ = fmt.Fprintf(GinkgoWriter, "  [DR2][PVC] %s\n", FormatPVCStatus(p))
+			})
+			DeferCleanup(func() {
+				DeletePV(cleanupCtx, cDR2, pvDR2)
+			})
+			DeferCleanup(func() {
+				DeletePVCWithCleanup(cleanupCtx, cDR2, pvcDR2)
+			})
+
+			vrcDR2 := CreateVolumeReplicationClass(ctx, cDR2, vrcName, env.Provisioner, secretName, secretNs, MirroringModeSnapshot)
+			DeferCleanup(func() {
+				DeleteVolumeReplicationClassWithCleanup(cleanupCtx, cDR2, vrcDR2)
+			})
+
+			vrDR2 := CreateVolumeReplication(ctx, cDR2, nsName, "vr-dr2-dem-003a", vrcName, pvcDR2.Name, replicationv1alpha1.Secondary)
+			DeferCleanup(func() {
+				DeleteVolumeReplicationWithCleanup(cleanupCtx, cDR2, vrDR2)
+			})
+
+			By("Waiting for secondary VR on DR2 to reach Replicating=True")
+			WaitForVolumeReplicationReplicatingOrCompleted(ctx, cDR2, vrDR2, func(v *replicationv1alpha1.VolumeReplication) {
+				_, _ = fmt.Fprintf(GinkgoWriter, "  [DR2][VR] %s\n", FormatVRStatus(v))
+			})
+
+			// Apply fault injection (handler validates fence is active internally)
+			By(fmt.Sprintf("[DR1] Applying fault injection to targets: %v (handler validates fence is active)", targets))
+			Logf("[TEST]", "L1-DEM-003-A: Before ApplyFence - targets to be fenced: %v", targets)
+			applyErr := handler.ApplyFence(ctx, targets)
+			Logf("[TEST]", "L1-DEM-003-A: After ApplyFence - error: %v (should be nil)", applyErr)
+			Expect(applyErr).To(Succeed(), "handler.ApplyFence")
+
+			// Attempt to demote primary to secondary while peer is fenced (force=false; should fail)
+			By("[DR1] Attempting to demote primary to secondary while peer is fenced (force=false; should fail)")
+			err = cDR1.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrDR1.Name}, vrDR1)
+			Expect(err).NotTo(HaveOccurred())
+			vrDR1.Spec.ReplicationState = replicationv1alpha1.Secondary
+			err = cDR1.Update(ctx, vrDR1)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("[DR1] Waiting for VR to report error (FailedToDemote or peer unreachable)")
+			WaitForVolumeReplicationError(ctx, cDR1, vrDR1)
+			err = cDR1.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrDR1.Name}, vrDR1)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Assertions: L1-DEM-003-A — demote with peer down (force=false) fails")
+			Expect(hasVolumeReplicationErrorCondition(vrDR1)).To(BeTrue(),
+				"L1-DEM-003-A: VR with fenced peer must have error condition (message: %q)", vrDR1.Status.Message)
+			Expect(vrDR1.Status.State).NotTo(Equal(replicationv1alpha1.SecondaryState),
+				"L1-DEM-003-A: VR state should not change to Secondary when peer is unreachable with force=false")
+
+			// Remove fault injection (handler validates connectivity is restored internally)
+			By("[DR1] Removing fault injection (handler validates connectivity is restored)")
+			Logf("[TEST]", "L1-DEM-003-A: Before RemoveFence - removing fence for targets: %v", targets)
+			removeErr := handler.RemoveFence(ctx)
+			Logf("[TEST]", "L1-DEM-003-A: After RemoveFence - error: %v (should be nil)", removeErr)
+			Expect(removeErr).To(Succeed(), "handler.RemoveFence")
+
+			// Wait for storage system and cluster to recover VR health
+			By("[DR1] Waiting for storage system and cluster to recover VR health (Degraded=False)")
+			Eventually(func() bool {
+				err := cDR1.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrDR1.Name}, vrDR1)
+				if err != nil {
+					return false
+				}
+				// Check that VR is no longer degraded (Degraded=False)
+				for _, cond := range vrDR1.Status.Conditions {
+					if cond.Type == "Degraded" {
+						isHealthy := cond.Status == metav1.ConditionFalse
+						if isHealthy {
+							_, _ = fmt.Fprintf(GinkgoWriter, "  [DR1][VR recovered] %s\n", FormatVRStatus(vrDR1))
+						}
+						return isHealthy
+					}
+				}
+				return false
+			}, 10*time.Minute, 10*time.Second).Should(BeTrue(),
+				"VR health should recover (Degraded=False) after removing fault injection within 10 minutes")
+
+			// Attempt demote again (should succeed after health recovery)
+			By("[DR1] Waiting for controller to retry and demote to succeed")
+			WaitForVolumeReplicationReplicatingOrCompleted(ctx, cDR1, vrDR1, func(v *replicationv1alpha1.VolumeReplication) {
+				_, _ = fmt.Fprintf(GinkgoWriter, "  [DR1][VR after fault remove] %s\n", FormatVRStatus(v))
+			})
+			err = cDR1.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrDR1.Name}, vrDR1)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("[DR1] Waiting for VR state to transition to Secondary (state change may be async after operation succeeds)")
+			Eventually(func() (replicationv1alpha1.State, error) {
+				err := cDR1.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrDR1.Name}, vrDR1)
+				return vrDR1.Status.State, err
+			}, 2*time.Minute, 5*time.Second).Should(Or(Equal(replicationv1alpha1.SecondaryState), Equal(replicationv1alpha1.UnknownState)),
+				"VR state should transition to Secondary or Unknown after demote operation")
+			err = cDR1.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrDR1.Name}, vrDR1)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Assertions: L1-DEM-003-A — demote succeeds after removing fault injection")
+			Expect(vrDR1.Status.State).To(Or(Equal(replicationv1alpha1.SecondaryState), Equal(replicationv1alpha1.UnknownState)),
+				"L1-DEM-003-A: VR state must be Secondary or Unknown after removing fault injection and successful demote, got %q", vrDR1.Status.State)
+			Expect(hasReplicationSuccessCondition(vrDR1)).To(BeTrue(),
+				"L1-DEM-003-A: VR must have Replicating or Completed condition after successful demote")
+		})
+	})
+
 	Describe("L1-DEM-004: Demote primary to secondary with peer unreachable (force=true)", func() {
 		It("L1-DEM-004: fence peer cluster → force demote succeeds → unfence → verify stability", func() {
 			By("Starting L1-DEM-004: Demote primary to secondary with peer unreachable (force=true)")
@@ -597,6 +791,7 @@ var _ = Describe("DemoteVolumeReplication", func() {
 			if len(cidrs) == 0 {
 				Skip("L1-DEM-004 could not get CIDRs: set FENCE_CIDRS, wait for CSI networkFenceClientStatus, or ensure peer cluster (DR2) has node InternalIPs for NetworkFence fallback")
 			}
+			Logf("[TEST]", "L1-DEM-004: Discovered %d fence targets FOR peer DR2: %v (using NetworkFence mechanism)", len(cidrs), cidrs)
 
 			nfName := "nf-dem-004-" + nsName
 			By("[DR1] Creating NetworkFence (Fenced) to block peer cluster access")
@@ -683,8 +878,8 @@ var _ = Describe("DemoteVolumeReplication", func() {
 Ref: https://github.com/nadavleva/kubernetes-csi-addons/issues/9
 
 Prerequisites for implementation:
-1. Driver-specific storage shutdown mechanism (e.g., Ceph RBD pool offline)
-2. Mock CSI driver or storage unavailability injection
+1. Driver-specific storage system shutdown mechanism (e.g., storage pool offline)
+2. Mock CSI driver or storage system unavailability injection
 3. Test on PRIMARY cluster (unlike L1-PROM-005 which was on secondary)
 
 Expected behavior:
@@ -703,8 +898,8 @@ Expected behavior:
 Ref: https://github.com/nadavleva/kubernetes-csi-addons/issues/9
 
 Prerequisites for implementation:
-1. Driver-specific storage shutdown mechanism (e.g., Ceph RBD pool offline)
-2. Mock CSI driver or storage unavailability injection
+1. Driver-specific storage system shutdown mechanism (e.g., storage pool offline)
+2. Mock CSI driver or storage system unavailability injection
 3. Verify that force=true on PRIMARY cannot overcome storage layer issues
 
 Expected behavior:
