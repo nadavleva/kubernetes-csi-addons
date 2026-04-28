@@ -26,7 +26,6 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	csiaddonsv1alpha1 "github.com/csi-addons/kubernetes-csi-addons/api/csiaddons/v1alpha1"
 	replicationv1alpha1 "github.com/csi-addons/kubernetes-csi-addons/api/replication.storage/v1alpha1"
 	"github.com/csi-addons/kubernetes-csi-addons/test/e2e/helpers"
 )
@@ -227,73 +226,6 @@ var _ = Describe("DisableVolumeReplication", func() {
 		})
 	})
 
-	Describe("L1-DIS-005: Disable with peer unreachable (force=false)", func() {
-		It("L1-DIS-005: disable replication on primary when peer unreachable (force=false), expect graceful failure", func() {
-			By("L1-DIS-005: NetworkFence blocks peer; create VR, attempt disable (should fail gracefully)")
-			c := GetK8sClient()
-			By("Checking that the driver supports NetworkFence (cached at suite initialization)")
-			if !IsNetworkFenceSupportAvailable() {
-				Skip("L1-DIS-005 requires NetworkFence support. Install NetworkFence CRDs and ensure driver advertises network_fence.NETWORK_FENCE.")
-			}
-
-			nsName := UniqueNamespace()
-			By("Creating namespace " + nsName)
-			ns := CreateNamespace(ctx, c, nsName)
-
-			secretName, secretNs := ReplicationSecretRef(ctx, c, env, nsName)
-			By("Creating PVC and waiting for Bound")
-			pvc := CreatePVC(ctx, c, nsName, "pvc-fence-dis", env.StorageClass, "1Gi", func(p *corev1.PersistentVolumeClaim) {
-				_, _ = fmt.Fprintf(GinkgoWriter, "  [PVC] %s\n", FormatPVCStatus(p))
-			})
-
-			vrcName := "vrc-fence-dis-" + nsName
-			By("Creating VolumeReplicationClass (snapshot)")
-			vrc := CreateVolumeReplicationClass(ctx, c, vrcName, env.Provisioner, secretName, secretNs, MirroringModeSnapshot)
-
-			nfcName := "nfc-dis-fence-" + nsName
-			By("Creating NetworkFenceClass")
-			nfc := CreateNetworkFenceClass(ctx, c, nfcName, env.Provisioner, secretName, secretNs)
-
-			By("Getting fence CIDRs")
-			cidrs := GetFenceCIDRs(ctx, c, env.Provisioner, nfcName)
-			if len(cidrs) == 0 {
-				Skip("L1-DIS-005 could not get CIDRs: set FENCE_CIDRS, wait for CSI networkFenceClientStatus, or ensure nodes have InternalIPs for NetworkFence fallback")
-			}
-
-			nfName := "nf-dis-fence-" + nsName
-			By("Creating NetworkFence to block peer")
-			nf := CreateNetworkFence(ctx, c, nfName, nfcName, cidrs, csiaddonsv1alpha1.Fenced)
-			By("Waiting for NetworkFence to be applied")
-			WaitForNetworkFenceResult(ctx, c, nf, csiaddonsv1alpha1.FencingOperationResultSucceeded)
-
-			vrName := "vr-dis-fence"
-			By("Creating VolumeReplication (primary) with peer blocked")
-			vr := CreateVolumeReplication(ctx, c, nsName, vrName, vrcName, pvc.Name, replicationv1alpha1.Primary)
-
-			By("Waiting for VR to report error due to blocked peer")
-			WaitForVolumeReplicationErrorWithTimeout(ctx, c, vr, quickErrorTimeout)
-
-			By("Attempting to delete VR while peer unreachable (disable should fail gracefully)")
-			DeleteVolumeReplicationWithCleanup(ctx, c, vr)
-
-			DeferCleanup(func() {
-				cleanupCtx := context.Background()
-				// Unfence to clean up properly
-				DeleteNetworkFenceWithCleanup(cleanupCtx, c, nf)
-				DeleteNetworkFenceClassWithCleanup(cleanupCtx, c, nfc)
-				DeleteVolumeReplicationClassWithCleanup(cleanupCtx, c, vrc)
-				DeletePVCWithCleanup(cleanupCtx, c, pvc)
-				DeleteNamespace(cleanupCtx, c, ns)
-			})
-
-			By("L1-DIS-005: Assertion — VR deletion completed (force=false, peer unreachable handled)")
-			err := c.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrName}, vr)
-			Expect(err).To(HaveOccurred())
-			Expect(errors.IsNotFound(err)).To(BeTrue(),
-				"VR should be gone after DisableVolumeReplication with unreachable peer")
-		})
-	})
-
 	Describe("L1-DIS-005-A: Disable with peer unreachable (unified FaultInjectionHandler)", func() {
 		It("L1-DIS-005-A: unified handler abstracts NetworkFence/iptables; blocks peer, VR fails, unfence allows delete", func() {
 			By("L1-DIS-005-A: FaultInjectionHandler blocks peer; create VR, attempt disable (similar to L1-DIS-005 but via handler)")
@@ -388,79 +320,6 @@ var _ = Describe("DisableVolumeReplication", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(pvc.Status.Phase).To(Equal(corev1.ClaimBound),
 				"PVC should remain bound after disable, got %s", pvc.Status.Phase)
-		})
-	})
-
-	Describe("L1-DIS-006: Disable with peer unreachable (force=true)", func() {
-		It("L1-DIS-006: disable replication on primary when peer unreachable (force=true), expect immediate disable", func() {
-			By("L1-DIS-006: NetworkFence blocks peer; create VR, attempt force disable (should succeed immediately)")
-			c := GetK8sClient()
-			By("Checking that the driver supports NetworkFence")
-			if !IsNetworkFenceSupportAvailable() {
-				Skip("L1-DIS-006 requires NetworkFence support. Install NetworkFence CRDs and ensure driver advertises network_fence.NETWORK_FENCE.")
-			}
-
-			nsName := UniqueNamespace()
-			By("Creating namespace " + nsName)
-			ns := CreateNamespace(ctx, c, nsName)
-
-			secretName, secretNs := ReplicationSecretRef(ctx, c, env, nsName)
-			By("Creating PVC and waiting for Bound")
-			pvc := CreatePVC(ctx, c, nsName, "pvc-fence-dis-force", env.StorageClass, "1Gi", func(p *corev1.PersistentVolumeClaim) {
-				_, _ = fmt.Fprintf(GinkgoWriter, "  [PVC] %s\n", FormatPVCStatus(p))
-			})
-
-			vrcName := "vrc-fence-dis-force-" + nsName
-			By("Creating VolumeReplicationClass (snapshot)")
-			vrc := CreateVolumeReplicationClass(ctx, c, vrcName, env.Provisioner, secretName, secretNs, MirroringModeSnapshot)
-
-			nfcName := "nfc-dis-fence-force-" + nsName
-			By("Creating NetworkFenceClass")
-			nfc := CreateNetworkFenceClass(ctx, c, nfcName, env.Provisioner, secretName, secretNs)
-
-			By("Getting fence CIDRs")
-			cidrs := GetFenceCIDRs(ctx, c, env.Provisioner, nfcName)
-			if len(cidrs) == 0 {
-				Skip("L1-DIS-006 could not get CIDRs: set FENCE_CIDRS, wait for CSI networkFenceClientStatus, or ensure nodes have InternalIPs for NetworkFence fallback")
-			}
-
-			nfName := "nf-dis-fence-force-" + nsName
-			By("Creating NetworkFence to block peer")
-			nf := CreateNetworkFence(ctx, c, nfName, nfcName, cidrs, csiaddonsv1alpha1.Fenced)
-			By("Waiting for NetworkFence to be applied")
-			WaitForNetworkFenceResult(ctx, c, nf, csiaddonsv1alpha1.FencingOperationResultSucceeded)
-
-			vrName := "vr-dis-fence-force"
-			By("Creating VolumeReplication (primary) with peer blocked")
-			vr := CreateVolumeReplication(ctx, c, nsName, vrName, vrcName, pvc.Name, replicationv1alpha1.Primary)
-
-			By("Waiting for VR to report error due to blocked peer")
-			WaitForVolumeReplicationError(ctx, c, vr)
-
-			By("L1-DIS-006: Attempting to delete VR with force=true (immediate disable expected)")
-			DeleteVolumeReplicationWithCleanup(ctx, c, vr)
-
-			DeferCleanup(func() {
-				cleanupCtx := context.Background()
-				// Unfence to clean up properly
-				DeleteNetworkFenceWithCleanup(cleanupCtx, c, nf)
-				DeleteNetworkFenceClassWithCleanup(cleanupCtx, c, nfc)
-				DeleteVolumeReplicationClassWithCleanup(cleanupCtx, c, vrc)
-				DeletePVCWithCleanup(cleanupCtx, c, pvc)
-				DeleteNamespace(cleanupCtx, c, ns)
-			})
-
-			By("L1-DIS-006: Assertion — VR deleted successfully (force disable with unreachable peer)")
-			err := c.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrName}, vr)
-			Expect(err).To(HaveOccurred())
-			Expect(errors.IsNotFound(err)).To(BeTrue(),
-				"VR should be gone after force DisableVolumeReplication")
-
-			By("L1-DIS-006: Assertion — PVC remains bound (primary writeable)")
-			err = c.Get(ctx, client.ObjectKey{Namespace: nsName, Name: pvc.Name}, pvc)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(pvc.Status.Phase).To(Equal(corev1.ClaimBound),
-				"PVC should remain bound after force disable, got %s", pvc.Status.Phase)
 		})
 	})
 

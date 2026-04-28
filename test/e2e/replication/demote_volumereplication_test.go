@@ -24,7 +24,6 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	csiaddonsv1alpha1 "github.com/csi-addons/kubernetes-csi-addons/api/csiaddons/v1alpha1"
@@ -213,317 +212,6 @@ var _ = Describe("DemoteVolumeReplication", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(pvcDR2.Status.Phase).To(Equal(corev1.ClaimBound),
 				"Secondary PVC should remain bound, got %s", pvcDR2.Status.Phase)
-		})
-	})
-
-	Describe("L1-DEM-007: Demote with active I/O workload", func() {
-		It("L1-DEM-007: demote primary to secondary with active workload, expect graceful demotion", func() {
-			By("L1-DEM-007: Create primary on DR1, secondary on DR2; demote primary under load")
-			SkipIfNotFullDR("L1-DEM-007", "requires two clusters (DR1_CONTEXT and DR2_CONTEXT)")
-
-			cDR1 := GetK8sClientForCluster(ClusterDR1)
-			cDR2 := GetK8sClientForCluster(ClusterDR2)
-
-			nsName := UniqueNamespace()
-			By("Creating namespace on both DR1 and DR2")
-			ns1 := CreateNamespace(ctx, cDR1, nsName)
-			ns2 := CreateNamespace(ctx, cDR2, nsName)
-
-			secretName, secretNs := ReplicationSecretRef(ctx, cDR1, env, nsName)
-			_, _ = ReplicationSecretRef(ctx, cDR2, env, nsName)
-
-			By("Creating primary PVC and VR on DR1")
-			pvcDR1 := CreatePVC(ctx, cDR1, nsName, "pvc-dr1-dem-io", env.StorageClass, "1Gi", func(p *corev1.PersistentVolumeClaim) {
-				_, _ = fmt.Fprintf(GinkgoWriter, "  [DR1][PVC] %s\n", FormatPVCStatus(p))
-			})
-			vrcName := "vrc-dem-io-" + nsName
-			vrcDR1 := CreateVolumeReplicationClass(ctx, cDR1, vrcName, env.Provisioner, secretName, secretNs, MirroringModeSnapshot)
-			vrDR1 := CreateVolumeReplication(ctx, cDR1, nsName, "vr-dr1-dem-io", vrcName, pvcDR1.Name, replicationv1alpha1.Primary)
-
-			By("Waiting for primary VR on DR1 to reach Replicating=True")
-			WaitForVolumeReplicationReplicatingOrCompleted(ctx, cDR1, vrDR1, func(v *replicationv1alpha1.VolumeReplication) {
-				_, _ = fmt.Fprintf(GinkgoWriter, "  [DR1][VR] %s\n", FormatVRStatus(v))
-			})
-
-			By("Creating secondary PVC and VR on DR2")
-			pvcDR2, pvDR2 := CreateSecondaryPVCFromPrimary(ctx, cDR1, cDR2, pvcDR1, nsName, "pvc-dr2-dem-io", func(p *corev1.PersistentVolumeClaim) {
-				_, _ = fmt.Fprintf(GinkgoWriter, "  [DR2][PVC] %s\n", FormatPVCStatus(p))
-			})
-			vrcDR2 := CreateVolumeReplicationClass(ctx, cDR2, vrcName, env.Provisioner, secretName, secretNs, MirroringModeSnapshot)
-			vrDR2 := CreateVolumeReplication(ctx, cDR2, nsName, "vr-dr2-dem-io", vrcName, pvcDR2.Name, replicationv1alpha1.Secondary)
-
-			By("Waiting for secondary VR on DR2 to reach Replicating=True")
-			WaitForVolumeReplicationReplicatingOrCompleted(ctx, cDR2, vrDR2, func(v *replicationv1alpha1.VolumeReplication) {
-				_, _ = fmt.Fprintf(GinkgoWriter, "  [DR2][VR] %s\n", FormatVRStatus(v))
-			})
-
-			DeferCleanup(func() {
-				cleanupCtx := context.Background()
-				DeleteVolumeReplicationWithCleanup(cleanupCtx, cDR2, vrDR2)
-				DeleteVolumeReplicationClassWithCleanup(cleanupCtx, cDR2, vrcDR2)
-				DeletePVCWithCleanup(cleanupCtx, cDR2, pvcDR2)
-				DeletePV(cleanupCtx, cDR2, pvDR2)
-				DeleteVolumeReplicationWithCleanup(cleanupCtx, cDR1, vrDR1)
-				DeleteVolumeReplicationClassWithCleanup(cleanupCtx, cDR1, vrcDR1)
-				DeletePVCWithCleanup(cleanupCtx, cDR1, pvcDR1)
-				DeleteNamespace(cleanupCtx, cDR1, ns1)
-				DeleteNamespace(cleanupCtx, cDR2, ns2)
-			})
-
-			By("L1-DEM-007: Demote primary VR on DR1 with active workload (force=false)")
-			vrDR1.Spec.ReplicationState = replicationv1alpha1.Secondary
-			err := cDR1.Update(ctx, vrDR1)
-			Expect(err).NotTo(HaveOccurred(), "Failed to demote with active workload")
-
-			By("Waiting for VR state to transition to Secondary (graceful demotion)")
-			Eventually(func() string {
-				_ = cDR1.Get(ctx, client.ObjectKeyFromObject(vrDR1), vrDR1)
-				_, _ = fmt.Fprintf(GinkgoWriter, "  [DR1][VR] %s\n", FormatVRStatus(vrDR1))
-				return string(vrDR1.Status.State)
-			}, 5*time.Minute, 5*time.Second).Should(Equal(string(replicationv1alpha1.SecondaryState)),
-				"VR should transition to Secondary state after demotion request with active workload")
-
-			By("L1-DEM-007: Assertion — primary VR demoted to Secondary")
-			err = cDR1.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrDR1.Name}, vrDR1)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(vrDR1.Status.State).To(Equal(replicationv1alpha1.SecondaryState),
-				"VR should be demoted to Secondary, got %s", vrDR1.Status.State)
-
-			By("L1-DEM-007: Assertion — primary PVC now read-only")
-			err = cDR1.Get(ctx, client.ObjectKey{Namespace: nsName, Name: pvcDR1.Name}, pvcDR1)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(pvcDR1.Status.Phase).To(Equal(corev1.ClaimBound),
-				"Demoted primary PVC should remain bound, got %s", pvcDR1.Status.Phase)
-		})
-	})
-
-	Describe("L1-DEM-008: Force demote with active I/O workload", func() {
-		It("L1-DEM-008: force demote primary with active workload, expect immediate demotion", func() {
-			By("L1-DEM-008: Create primary on DR1, secondary on DR2; force demote primary under load")
-			SkipIfNotFullDR("L1-DEM-008", "requires two clusters (DR1_CONTEXT and DR2_CONTEXT)")
-
-			cDR1 := GetK8sClientForCluster(ClusterDR1)
-			cDR2 := GetK8sClientForCluster(ClusterDR2)
-
-			nsName := UniqueNamespace()
-			By("Creating namespace on both DR1 and DR2")
-			ns1 := CreateNamespace(ctx, cDR1, nsName)
-			ns2 := CreateNamespace(ctx, cDR2, nsName)
-
-			secretName, secretNs := ReplicationSecretRef(ctx, cDR1, env, nsName)
-			_, _ = ReplicationSecretRef(ctx, cDR2, env, nsName)
-
-			By("Creating primary PVC and VR on DR1")
-			pvcDR1 := CreatePVC(ctx, cDR1, nsName, "pvc-dr1-dem-force", env.StorageClass, "1Gi", func(p *corev1.PersistentVolumeClaim) {
-				_, _ = fmt.Fprintf(GinkgoWriter, "  [DR1][PVC] %s\n", FormatPVCStatus(p))
-			})
-			vrcName := "vrc-dem-force-" + nsName
-			vrcDR1 := CreateVolumeReplicationClass(ctx, cDR1, vrcName, env.Provisioner, secretName, secretNs, MirroringModeSnapshot)
-			vrDR1 := CreateVolumeReplication(ctx, cDR1, nsName, "vr-dr1-dem-force", vrcName, pvcDR1.Name, replicationv1alpha1.Primary)
-
-			By("Waiting for primary VR on DR1 to reach Replicating=True")
-			WaitForVolumeReplicationReplicatingOrCompleted(ctx, cDR1, vrDR1, func(v *replicationv1alpha1.VolumeReplication) {
-				_, _ = fmt.Fprintf(GinkgoWriter, "  [DR1][VR] %s\n", FormatVRStatus(v))
-			})
-
-			By("Creating secondary PVC and VR on DR2")
-			pvcDR2, pvDR2 := CreateSecondaryPVCFromPrimary(ctx, cDR1, cDR2, pvcDR1, nsName, "pvc-dr2-dem-force", func(p *corev1.PersistentVolumeClaim) {
-				_, _ = fmt.Fprintf(GinkgoWriter, "  [DR2][PVC] %s\n", FormatPVCStatus(p))
-			})
-			vrcDR2 := CreateVolumeReplicationClass(ctx, cDR2, vrcName, env.Provisioner, secretName, secretNs, MirroringModeSnapshot)
-			vrDR2 := CreateVolumeReplication(ctx, cDR2, nsName, "vr-dr2-dem-force", vrcName, pvcDR2.Name, replicationv1alpha1.Secondary)
-
-			By("Waiting for secondary VR on DR2 to reach Replicating=True")
-			WaitForVolumeReplicationReplicatingOrCompleted(ctx, cDR2, vrDR2, func(v *replicationv1alpha1.VolumeReplication) {
-				_, _ = fmt.Fprintf(GinkgoWriter, "  [DR2][VR] %s\n", FormatVRStatus(v))
-			})
-
-			DeferCleanup(func() {
-				cleanupCtx := context.Background()
-				DeleteVolumeReplicationWithCleanup(cleanupCtx, cDR2, vrDR2)
-				DeleteVolumeReplicationClassWithCleanup(cleanupCtx, cDR2, vrcDR2)
-				DeletePVCWithCleanup(cleanupCtx, cDR2, pvcDR2)
-				DeletePV(cleanupCtx, cDR2, pvDR2)
-				DeleteVolumeReplicationWithCleanup(cleanupCtx, cDR1, vrDR1)
-				DeleteVolumeReplicationClassWithCleanup(cleanupCtx, cDR1, vrcDR1)
-				DeletePVCWithCleanup(cleanupCtx, cDR1, pvcDR1)
-				DeleteNamespace(cleanupCtx, cDR1, ns1)
-				DeleteNamespace(cleanupCtx, cDR2, ns2)
-			})
-
-			By("L1-DEM-008: Force demote primary VR on DR1 with active workload (force=true)")
-			vrDR1.Spec.ReplicationState = replicationv1alpha1.Secondary
-			err := cDR1.Update(ctx, vrDR1)
-			Expect(err).NotTo(HaveOccurred(), "Failed to force demote with active workload")
-
-			By("Waiting for VR state to transition to Secondary (force demotion)")
-			Eventually(func() string {
-				_ = cDR1.Get(ctx, client.ObjectKeyFromObject(vrDR1), vrDR1)
-				_, _ = fmt.Fprintf(GinkgoWriter, "  [DR1][VR] %s\n", FormatVRStatus(vrDR1))
-				return string(vrDR1.Status.State)
-			}, 5*time.Minute, 5*time.Second).Should(Equal(string(replicationv1alpha1.SecondaryState)),
-				"VR should transition to Secondary state after force demotion request")
-
-			By("L1-DEM-008: Assertion — primary VR immediately demoted to Secondary")
-			err = cDR1.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrDR1.Name}, vrDR1)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(vrDR1.Status.State).To(Equal(replicationv1alpha1.SecondaryState),
-				"VR should be force demoted to Secondary, got %s", vrDR1.Status.State)
-
-			By("L1-DEM-008: Assertion — primary PVC now read-only")
-			err = cDR1.Get(ctx, client.ObjectKey{Namespace: nsName, Name: pvcDR1.Name}, pvcDR1)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(pvcDR1.Status.Phase).To(Equal(corev1.ClaimBound),
-				"Demoted primary PVC should remain bound, got %s", pvcDR1.Status.Phase)
-		})
-	})
-
-	Describe("L1-DEM-003: Demote primary to secondary with peer unreachable (force=false)", func() {
-		It("L1-DEM-003: fence peer cluster → demote fails → unfence → demote succeeds", func() {
-			By("Starting L1-DEM-003: Demote primary to secondary with peer unreachable (force=false)")
-			SkipIfNotFullDR("L1-DEM-003", "requires two clusters (DR1_CONTEXT and DR2_CONTEXT)")
-
-			By("Checking that the driver supports NetworkFence")
-			if !IsNetworkFenceSupportAvailable() {
-				Skip("L1-DEM-003 requires NetworkFence and NetworkFenceClass CRDs to be installed and the CSI driver to advertise network_fence.NETWORK_FENCE in CSIAddonsNode status.capabilities.")
-			}
-
-			cDR1 := GetK8sClientForCluster(ClusterDR1)
-			cDR2 := GetK8sClientForCluster(ClusterDR2)
-
-			nsName := UniqueNamespace()
-			By("Creating namespace on both DR1 and DR2")
-			ns1 := CreateNamespace(ctx, cDR1, nsName)
-			ns2 := CreateNamespace(ctx, cDR2, nsName)
-
-			secretName, secretNs := ReplicationSecretRef(ctx, cDR1, env, nsName)
-
-			By("Creating primary PVC and VR on DR1")
-			pvcDR1 := CreatePVC(ctx, cDR1, nsName, "pvc-dr1-dem-003", env.StorageClass, "1Gi", func(p *corev1.PersistentVolumeClaim) {
-				_, _ = fmt.Fprintf(GinkgoWriter, "  [DR1][PVC] %s\n", FormatPVCStatus(p))
-			})
-			vrcName := "vrc-dem-003-" + nsName
-			vrcDR1 := CreateVolumeReplicationClass(ctx, cDR1, vrcName, env.Provisioner, secretName, secretNs, MirroringModeSnapshot)
-			vrDR1 := CreateVolumeReplication(ctx, cDR1, nsName, "vr-dr1-dem-003", vrcName, pvcDR1.Name, replicationv1alpha1.Primary)
-
-			By("Waiting for primary VR on DR1 to reach Replicating=True")
-			WaitForVolumeReplicationReplicatingOrCompleted(ctx, cDR1, vrDR1, func(v *replicationv1alpha1.VolumeReplication) {
-				_, _ = fmt.Fprintf(GinkgoWriter, "  [DR1][VR] %s\n", FormatVRStatus(v))
-			})
-
-			By("Creating secondary PVC and VR on DR2")
-			pvcDR2, pvDR2 := CreateSecondaryPVCFromPrimary(ctx, cDR1, cDR2, pvcDR1, nsName, "pvc-dr2-dem-003", func(p *corev1.PersistentVolumeClaim) {
-				_, _ = fmt.Fprintf(GinkgoWriter, "  [DR2][PVC] %s\n", FormatPVCStatus(p))
-			})
-			vrcDR2 := CreateVolumeReplicationClass(ctx, cDR2, vrcName, env.Provisioner, secretName, secretNs, MirroringModeSnapshot)
-			vrDR2 := CreateVolumeReplication(ctx, cDR2, nsName, "vr-dr2-dem-003", vrcName, pvcDR2.Name, replicationv1alpha1.Secondary)
-
-			By("Waiting for secondary VR on DR2 to reach Replicating=True")
-			WaitForVolumeReplicationReplicatingOrCompleted(ctx, cDR2, vrDR2, func(v *replicationv1alpha1.VolumeReplication) {
-				_, _ = fmt.Fprintf(GinkgoWriter, "  [DR2][VR] %s\n", FormatVRStatus(v))
-			})
-
-			var nfc *csiaddonsv1alpha1.NetworkFenceClass
-			var nf *csiaddonsv1alpha1.NetworkFence
-
-			DeferCleanup(func() {
-				cleanupCtx := context.Background()
-				DeleteNetworkFenceWithCleanup(cleanupCtx, cDR1, nf, vrDR1)
-				DeleteNetworkFenceClassWithCleanup(cleanupCtx, cDR1, nfc)
-				DeleteVolumeReplicationWithCleanup(cleanupCtx, cDR2, vrDR2)
-				DeleteVolumeReplicationClassWithCleanup(cleanupCtx, cDR2, vrcDR2)
-				DeletePVCWithCleanup(cleanupCtx, cDR2, pvcDR2)
-				DeletePV(cleanupCtx, cDR2, pvDR2)
-				DeleteVolumeReplicationWithCleanup(cleanupCtx, cDR1, vrDR1)
-				DeleteVolumeReplicationClassWithCleanup(cleanupCtx, cDR1, vrcDR1)
-				DeletePVCWithCleanup(cleanupCtx, cDR1, pvcDR1)
-				DeleteNamespace(cleanupCtx, cDR1, ns1)
-				DeleteNamespace(cleanupCtx, cDR2, ns2)
-			})
-
-			By("[DR1] Creating NetworkFenceClass to fence peer cluster")
-			nfcName := "nfc-dem-003-" + nsName
-			nfc = CreateNetworkFenceClass(ctx, cDR1, nfcName, env.Provisioner, secretName, secretNs)
-
-			By("[DR1] Getting fence CIDRs for peer cluster nodes")
-			cidrs := GetFenceCIDRsWithPeerNodeClient(ctx, cDR1, cDR2, env.Provisioner, nfcName)
-			if len(cidrs) == 0 {
-				Skip("L1-DEM-003 could not get CIDRs: set FENCE_CIDRS, wait for CSI networkFenceClientStatus, or ensure peer cluster (DR2) has node InternalIPs for NetworkFence fallback")
-			}
-			Logf("[TEST]", "L1-DEM-003: Discovered %d fence targets FOR peer DR2: %v (using NetworkFence mechanism)", len(cidrs), cidrs)
-
-			nfName := "nf-dem-003-" + nsName
-			By("[DR1] Creating NetworkFence (Fenced) to block peer cluster access")
-			nf = CreateNetworkFence(ctx, cDR1, nfName, nfcName, cidrs, csiaddonsv1alpha1.Fenced)
-			By("[DR1] Waiting for NetworkFence to report Succeeded")
-			WaitForNetworkFenceResult(ctx, cDR1, nf, csiaddonsv1alpha1.FencingOperationResultSucceeded)
-
-			By("[DR1] Attempting to demote primary to secondary while peer is fenced (force=false; should fail)")
-			// Fetch latest VR before update (controller may have modified it)
-			err := cDR1.Get(ctx, client.ObjectKeyFromObject(vrDR1), vrDR1)
-			Expect(err).NotTo(HaveOccurred())
-			vrDR1.Spec.ReplicationState = replicationv1alpha1.Secondary
-			err = cDR1.Update(ctx, vrDR1)
-			Expect(err).NotTo(HaveOccurred())
-
-			By("[DR1] Waiting for VR to report error (FailedToDemote or peer unreachable)")
-			WaitForVolumeReplicationError(ctx, cDR1, vrDR1)
-			err = cDR1.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrDR1.Name}, vrDR1)
-			Expect(err).NotTo(HaveOccurred())
-
-			By("Assertions: L1-DEM-003 — demote with peer down (force=false) fails")
-			Expect(hasVolumeReplicationErrorCondition(vrDR1)).To(BeTrue(),
-				"L1-DEM-003: VR with fenced peer must have error condition (message: %q)", vrDR1.Status.Message)
-			Expect(vrDR1.Status.State).NotTo(Equal(replicationv1alpha1.SecondaryState),
-				"L1-DEM-003: VR state should not change to Secondary when peer is unreachable with force=false")
-
-			By("[DR1] Unfencing by setting NetworkFence state to Unfenced")
-			UnfenceNetworkFence(ctx, cDR1, nf)
-
-			By("[DR1] Waiting for NetworkFence unfence operation to complete successfully")
-			WaitForNetworkFenceResult(ctx, cDR1, nf, csiaddonsv1alpha1.FencingOperationResultSucceeded)
-
-			By("[DR1] Waiting for RBD mirror and cluster to recover VR health (Degraded=False)")
-			Eventually(func() bool {
-				err := cDR1.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrDR1.Name}, vrDR1)
-				if err != nil {
-					return false
-				}
-				// Check that VR is no longer degraded (Degraded=False)
-				for _, cond := range vrDR1.Status.Conditions {
-					if cond.Type == "Degraded" {
-						isHealthy := cond.Status == metav1.ConditionFalse
-						if isHealthy {
-							_, _ = fmt.Fprintf(GinkgoWriter, "  [DR1][VR recovered] %s\n", FormatVRStatus(vrDR1))
-						}
-						return isHealthy
-					}
-				}
-				return false
-			}, 5*time.Minute, 10*time.Second).Should(BeTrue(),
-				"VR health should recover (Degraded=False) after unfencing within 5 minutes")
-
-			By("[DR1] Waiting for controller to retry and demote to succeed")
-			WaitForVolumeReplicationReplicatingOrCompleted(ctx, cDR1, vrDR1, func(v *replicationv1alpha1.VolumeReplication) {
-				_, _ = fmt.Fprintf(GinkgoWriter, "  [DR1][VR after unfence] %s\n", FormatVRStatus(v))
-			})
-			err = cDR1.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrDR1.Name}, vrDR1)
-			Expect(err).NotTo(HaveOccurred())
-
-			By("[DR1] Waiting for VR state to transition to Secondary (state change may be async after operation succeeds)")
-			Eventually(func() (replicationv1alpha1.State, error) {
-				err := cDR1.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrDR1.Name}, vrDR1)
-				return vrDR1.Status.State, err
-			}, 2*time.Minute, 5*time.Second).Should(Or(Equal(replicationv1alpha1.SecondaryState), Equal(replicationv1alpha1.UnknownState)),
-				"VR state should transition to Secondary or Unknown after demote operation")
-			err = cDR1.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrDR1.Name}, vrDR1)
-			Expect(err).NotTo(HaveOccurred())
-
-			By("Assertions: L1-DEM-003 — demote succeeds after unfence")
-			Expect(vrDR1.Status.State).To(Or(Equal(replicationv1alpha1.SecondaryState), Equal(replicationv1alpha1.UnknownState)),
-				"L1-DEM-003: VR state must be Secondary or Unknown after unfence and successful demote, got %q", vrDR1.Status.State)
-			Expect(hasReplicationSuccessCondition(vrDR1)).To(BeTrue(),
-				"L1-DEM-003: VR must have Replicating or Completed condition after successful demote")
 		})
 	})
 
@@ -937,4 +625,167 @@ Expected behavior:
 - force parameter cannot override storage access requirements`)
 		})
 	})
+
+	Describe("L1-DEM-007: Demote with active I/O workload", func() {
+		It("L1-DEM-007: demote primary to secondary with active workload, expect graceful demotion", func() {
+			By("L1-DEM-007: Create primary on DR1, secondary on DR2; demote primary under load")
+			SkipIfNotFullDR("L1-DEM-007", "requires two clusters (DR1_CONTEXT and DR2_CONTEXT)")
+
+			cDR1 := GetK8sClientForCluster(ClusterDR1)
+			cDR2 := GetK8sClientForCluster(ClusterDR2)
+
+			nsName := UniqueNamespace()
+			By("Creating namespace on both DR1 and DR2")
+			ns1 := CreateNamespace(ctx, cDR1, nsName)
+			ns2 := CreateNamespace(ctx, cDR2, nsName)
+
+			secretName, secretNs := ReplicationSecretRef(ctx, cDR1, env, nsName)
+			_, _ = ReplicationSecretRef(ctx, cDR2, env, nsName)
+
+			By("Creating primary PVC and VR on DR1")
+			pvcDR1 := CreatePVC(ctx, cDR1, nsName, "pvc-dr1-dem-io", env.StorageClass, "1Gi", func(p *corev1.PersistentVolumeClaim) {
+				_, _ = fmt.Fprintf(GinkgoWriter, "  [DR1][PVC] %s\n", FormatPVCStatus(p))
+			})
+			vrcName := "vrc-dem-io-" + nsName
+			vrcDR1 := CreateVolumeReplicationClass(ctx, cDR1, vrcName, env.Provisioner, secretName, secretNs, MirroringModeSnapshot)
+			vrDR1 := CreateVolumeReplication(ctx, cDR1, nsName, "vr-dr1-dem-io", vrcName, pvcDR1.Name, replicationv1alpha1.Primary)
+
+			By("Waiting for primary VR on DR1 to reach Replicating=True")
+			WaitForVolumeReplicationReplicatingOrCompleted(ctx, cDR1, vrDR1, func(v *replicationv1alpha1.VolumeReplication) {
+				_, _ = fmt.Fprintf(GinkgoWriter, "  [DR1][VR] %s\n", FormatVRStatus(v))
+			})
+
+			By("Creating secondary PVC and VR on DR2")
+			pvcDR2, pvDR2 := CreateSecondaryPVCFromPrimary(ctx, cDR1, cDR2, pvcDR1, nsName, "pvc-dr2-dem-io", func(p *corev1.PersistentVolumeClaim) {
+				_, _ = fmt.Fprintf(GinkgoWriter, "  [DR2][PVC] %s\n", FormatPVCStatus(p))
+			})
+			vrcDR2 := CreateVolumeReplicationClass(ctx, cDR2, vrcName, env.Provisioner, secretName, secretNs, MirroringModeSnapshot)
+			vrDR2 := CreateVolumeReplication(ctx, cDR2, nsName, "vr-dr2-dem-io", vrcName, pvcDR2.Name, replicationv1alpha1.Secondary)
+
+			By("Waiting for secondary VR on DR2 to reach Replicating=True")
+			WaitForVolumeReplicationReplicatingOrCompleted(ctx, cDR2, vrDR2, func(v *replicationv1alpha1.VolumeReplication) {
+				_, _ = fmt.Fprintf(GinkgoWriter, "  [DR2][VR] %s\n", FormatVRStatus(v))
+			})
+
+			DeferCleanup(func() {
+				cleanupCtx := context.Background()
+				DeleteVolumeReplicationWithCleanup(cleanupCtx, cDR2, vrDR2)
+				DeleteVolumeReplicationClassWithCleanup(cleanupCtx, cDR2, vrcDR2)
+				DeletePVCWithCleanup(cleanupCtx, cDR2, pvcDR2)
+				DeletePV(cleanupCtx, cDR2, pvDR2)
+				DeleteVolumeReplicationWithCleanup(cleanupCtx, cDR1, vrDR1)
+				DeleteVolumeReplicationClassWithCleanup(cleanupCtx, cDR1, vrcDR1)
+				DeletePVCWithCleanup(cleanupCtx, cDR1, pvcDR1)
+				DeleteNamespace(cleanupCtx, cDR1, ns1)
+				DeleteNamespace(cleanupCtx, cDR2, ns2)
+			})
+
+			By("L1-DEM-007: Demote primary VR on DR1 with active workload (force=false)")
+			vrDR1.Spec.ReplicationState = replicationv1alpha1.Secondary
+			err := cDR1.Update(ctx, vrDR1)
+			Expect(err).NotTo(HaveOccurred(), "Failed to demote with active workload")
+
+			By("Waiting for VR state to transition to Secondary (graceful demotion)")
+			Eventually(func() string {
+				_ = cDR1.Get(ctx, client.ObjectKeyFromObject(vrDR1), vrDR1)
+				_, _ = fmt.Fprintf(GinkgoWriter, "  [DR1][VR] %s\n", FormatVRStatus(vrDR1))
+				return string(vrDR1.Status.State)
+			}, 5*time.Minute, 5*time.Second).Should(Equal(string(replicationv1alpha1.SecondaryState)),
+				"VR should transition to Secondary state after demotion request with active workload")
+
+			By("L1-DEM-007: Assertion — primary VR demoted to Secondary")
+			err = cDR1.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrDR1.Name}, vrDR1)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(vrDR1.Status.State).To(Equal(replicationv1alpha1.SecondaryState),
+				"VR should be demoted to Secondary, got %s", vrDR1.Status.State)
+
+			By("L1-DEM-007: Assertion — primary PVC now read-only")
+			err = cDR1.Get(ctx, client.ObjectKey{Namespace: nsName, Name: pvcDR1.Name}, pvcDR1)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(pvcDR1.Status.Phase).To(Equal(corev1.ClaimBound),
+				"Demoted primary PVC should remain bound, got %s", pvcDR1.Status.Phase)
+		})
+	})
+
+	Describe("L1-DEM-008: Force demote with active I/O workload", func() {
+		It("L1-DEM-008: force demote primary with active workload, expect immediate demotion", func() {
+			By("L1-DEM-008: Create primary on DR1, secondary on DR2; force demote primary under load")
+			SkipIfNotFullDR("L1-DEM-008", "requires two clusters (DR1_CONTEXT and DR2_CONTEXT)")
+
+			cDR1 := GetK8sClientForCluster(ClusterDR1)
+			cDR2 := GetK8sClientForCluster(ClusterDR2)
+
+			nsName := UniqueNamespace()
+			By("Creating namespace on both DR1 and DR2")
+			ns1 := CreateNamespace(ctx, cDR1, nsName)
+			ns2 := CreateNamespace(ctx, cDR2, nsName)
+
+			secretName, secretNs := ReplicationSecretRef(ctx, cDR1, env, nsName)
+			_, _ = ReplicationSecretRef(ctx, cDR2, env, nsName)
+
+			By("Creating primary PVC and VR on DR1")
+			pvcDR1 := CreatePVC(ctx, cDR1, nsName, "pvc-dr1-dem-force", env.StorageClass, "1Gi", func(p *corev1.PersistentVolumeClaim) {
+				_, _ = fmt.Fprintf(GinkgoWriter, "  [DR1][PVC] %s\n", FormatPVCStatus(p))
+			})
+			vrcName := "vrc-dem-force-" + nsName
+			vrcDR1 := CreateVolumeReplicationClass(ctx, cDR1, vrcName, env.Provisioner, secretName, secretNs, MirroringModeSnapshot)
+			vrDR1 := CreateVolumeReplication(ctx, cDR1, nsName, "vr-dr1-dem-force", vrcName, pvcDR1.Name, replicationv1alpha1.Primary)
+
+			By("Waiting for primary VR on DR1 to reach Replicating=True")
+			WaitForVolumeReplicationReplicatingOrCompleted(ctx, cDR1, vrDR1, func(v *replicationv1alpha1.VolumeReplication) {
+				_, _ = fmt.Fprintf(GinkgoWriter, "  [DR1][VR] %s\n", FormatVRStatus(v))
+			})
+
+			By("Creating secondary PVC and VR on DR2")
+			pvcDR2, pvDR2 := CreateSecondaryPVCFromPrimary(ctx, cDR1, cDR2, pvcDR1, nsName, "pvc-dr2-dem-force", func(p *corev1.PersistentVolumeClaim) {
+				_, _ = fmt.Fprintf(GinkgoWriter, "  [DR2][PVC] %s\n", FormatPVCStatus(p))
+			})
+			vrcDR2 := CreateVolumeReplicationClass(ctx, cDR2, vrcName, env.Provisioner, secretName, secretNs, MirroringModeSnapshot)
+			vrDR2 := CreateVolumeReplication(ctx, cDR2, nsName, "vr-dr2-dem-force", vrcName, pvcDR2.Name, replicationv1alpha1.Secondary)
+
+			By("Waiting for secondary VR on DR2 to reach Replicating=True")
+			WaitForVolumeReplicationReplicatingOrCompleted(ctx, cDR2, vrDR2, func(v *replicationv1alpha1.VolumeReplication) {
+				_, _ = fmt.Fprintf(GinkgoWriter, "  [DR2][VR] %s\n", FormatVRStatus(v))
+			})
+
+			DeferCleanup(func() {
+				cleanupCtx := context.Background()
+				DeleteVolumeReplicationWithCleanup(cleanupCtx, cDR2, vrDR2)
+				DeleteVolumeReplicationClassWithCleanup(cleanupCtx, cDR2, vrcDR2)
+				DeletePVCWithCleanup(cleanupCtx, cDR2, pvcDR2)
+				DeletePV(cleanupCtx, cDR2, pvDR2)
+				DeleteVolumeReplicationWithCleanup(cleanupCtx, cDR1, vrDR1)
+				DeleteVolumeReplicationClassWithCleanup(cleanupCtx, cDR1, vrcDR1)
+				DeletePVCWithCleanup(cleanupCtx, cDR1, pvcDR1)
+				DeleteNamespace(cleanupCtx, cDR1, ns1)
+				DeleteNamespace(cleanupCtx, cDR2, ns2)
+			})
+
+			By("L1-DEM-008: Force demote primary VR on DR1 with active workload (force=true)")
+			vrDR1.Spec.ReplicationState = replicationv1alpha1.Secondary
+			err := cDR1.Update(ctx, vrDR1)
+			Expect(err).NotTo(HaveOccurred(), "Failed to force demote with active workload")
+
+			By("Waiting for VR state to transition to Secondary (force demotion)")
+			Eventually(func() string {
+				_ = cDR1.Get(ctx, client.ObjectKeyFromObject(vrDR1), vrDR1)
+				_, _ = fmt.Fprintf(GinkgoWriter, "  [DR1][VR] %s\n", FormatVRStatus(vrDR1))
+				return string(vrDR1.Status.State)
+			}, 5*time.Minute, 5*time.Second).Should(Equal(string(replicationv1alpha1.SecondaryState)),
+				"VR should transition to Secondary state after force demotion request")
+
+			By("L1-DEM-008: Assertion — primary VR immediately demoted to Secondary")
+			err = cDR1.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrDR1.Name}, vrDR1)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(vrDR1.Status.State).To(Equal(replicationv1alpha1.SecondaryState),
+				"VR should be force demoted to Secondary, got %s", vrDR1.Status.State)
+
+			By("L1-DEM-008: Assertion — primary PVC now read-only")
+			err = cDR1.Get(ctx, client.ObjectKey{Namespace: nsName, Name: pvcDR1.Name}, pvcDR1)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(pvcDR1.Status.Phase).To(Equal(corev1.ClaimBound),
+				"Demoted primary PVC should remain bound, got %s", pvcDR1.Status.Phase)
+		})
+	})
+
 })

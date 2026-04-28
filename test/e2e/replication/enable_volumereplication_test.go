@@ -26,7 +26,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	csiaddonsv1alpha1 "github.com/csi-addons/kubernetes-csi-addons/api/csiaddons/v1alpha1"
 	replicationv1alpha1 "github.com/csi-addons/kubernetes-csi-addons/api/replication.storage/v1alpha1"
 	"github.com/csi-addons/kubernetes-csi-addons/test/e2e/helpers"
 )
@@ -134,165 +133,9 @@ var _ = Describe("EnableVolumeReplication", func() {
 		})
 	})
 
-	Describe("L1-E-003: Peer unreachable (NetworkFence or iptables)", func() {
-		It("L1-E-003 + L1-INFO-005: fence node → EnableVolumeReplication fails and GetVolumeReplicationInfo shows error; unfence → EnableVolumeReplication succeeds and GetVolumeReplicationInfo shows healthy", func() {
-			injector := helpers.GetFaultInjectorTypeFromEnv()
-			Logf("[TEST]", "L1-E-003 fault injector: %s (E2E_FAULT_INJECTOR=iptables|networkfence|none; default iptables when unset)", injector)
-
-			if injector == helpers.FaultInjectorNone {
-				Skip("L1-E-003 requires fault injection (set E2E_FAULT_INJECTOR to iptables or networkfence)")
-			}
-
-			By("Test case 1: Block storage node via fault injection; create VR and expect EnableVolumeReplication to fail; assert GetVolumeReplicationInfo (L1-INFO-005) shows error")
-			c := GetK8sClient()
-
-			switch injector {
-			case helpers.FaultInjectorNetworkFence:
-				if !IsNetworkFenceSupportAvailable() {
-					Skip("L1-E-003 (networkfence) requires NetworkFence and NetworkFenceClass CRDs and CSI driver network_fence capability in CSIAddonsNode.")
-				}
-			case helpers.FaultInjectorIptables:
-				if !helpers.HasPrivilegedDaemonSetSupport(ctx, c) {
-					Skip("L1-E-003 (iptables) requires privileged DaemonSet support for iptables fault injection.")
-				}
-			}
-
-			nsName := UniqueNamespace()
-			By("Creating namespace " + nsName)
-			ns := CreateNamespace(ctx, c, nsName)
-			RegisterTestNamespace(ns.Name)
-
-			secretName, secretNs := ReplicationSecretRef(ctx, c, env, nsName)
-			By("Creating PVC and waiting for Bound")
-			pvc := CreatePVC(ctx, c, nsName, "pvc-fence", env.StorageClass, "1Gi", func(p *corev1.PersistentVolumeClaim) {
-				_, _ = fmt.Fprintf(GinkgoWriter, "  [PVC] %s\n", FormatPVCStatus(p))
-			})
-
-			vrcName := "vrc-fence-" + nsName
-			By("Creating VolumeReplicationClass (snapshot) " + vrcName)
-			vrc := CreateVolumeReplicationClass(ctx, c, vrcName, env.Provisioner, secretName, secretNs, MirroringModeSnapshot)
-
-			var (
-				nfc *csiaddonsv1alpha1.NetworkFenceClass
-				nf  *csiaddonsv1alpha1.NetworkFence
-			)
-			var faultProvider helpers.PeerFenceProvider
-			var cidrs []string
-
-			switch injector {
-			case helpers.FaultInjectorNetworkFence:
-				nfcName := "nfc-fence-" + nsName
-				By("Creating NetworkFenceClass " + nfcName + " (same provisioner and secret as VRC)")
-				nfc = CreateNetworkFenceClass(ctx, c, nfcName, env.Provisioner, secretName, secretNs)
-
-				By("Getting fence CIDRs (from FENCE_CIDRS env, CSIAddonsNode status, or node InternalIPs)")
-				cidrs = GetFenceCIDRs(ctx, c, env.Provisioner, nfcName)
-				if len(cidrs) == 0 {
-					Skip("L1-E-003 could not get CIDRs: set FENCE_CIDRS, wait for CSI networkFenceClientStatus, or ensure nodes have InternalIPs for NetworkFence fallback")
-				}
-
-				nfName := "nf-fence-" + nsName
-				By("Creating NetworkFence (Fenced) to block node access " + nfName)
-				nf = CreateNetworkFence(ctx, c, nfName, nfcName, cidrs, csiaddonsv1alpha1.Fenced)
-				By("Waiting for NetworkFence to report Succeeded")
-				WaitForNetworkFenceResult(ctx, c, nf, csiaddonsv1alpha1.FencingOperationResultSucceeded)
-
-			case helpers.FaultInjectorIptables:
-				var err error
-				faultProvider, err = helpers.NewFaultInjectionProvider(helpers.FaultInjectionConfig{
-					Client:     c,
-					RESTConfig: GetRESTConfig(),
-					Namespace:  nsName,
-					ProviderParams: map[string]string{
-						"provisioner": env.Provisioner,
-						"image":       helpers.DefaultIptablesImageWithRegistry,
-					},
-				})
-				Expect(err).NotTo(HaveOccurred(), "NewFaultInjectionProvider")
-				if !faultProvider.IsSupported(ctx) {
-					Skip("L1-E-003 (iptables): fault injection provider not supported on this cluster")
-				}
-
-				By("Getting fence CIDRs for iptables (FENCE_CIDRS; full-DR: peer backends from FENCE_PEER_SERVICES or FENCE_TARGET_SERVICES on DR2)")
-				if IsFullDRMode() {
-					cidrs = GetFenceCIDRsForFaultInjectionPeer(ctx, GetK8sClientForCluster(ClusterDR1), GetK8sClientForCluster(ClusterDR2))
-				} else {
-					cidrs = GetFenceCIDRsForFaultInjection(ctx, c)
-				}
-				if len(cidrs) == 0 {
-					Skip("L1-E-003 could not get CIDRs for iptables: set FENCE_CIDRS, or FENCE_TARGET_SERVICES (e.g. rook-ceph/rook-ceph-active-mons); with DR1+DR2, services are resolved on the peer cluster")
-				}
-
-				By(fmt.Sprintf("Fencing peer CIDRs via iptables: %v", cidrs))
-				for _, cidr := range cidrs {
-					Expect(faultProvider.FenceIP(ctx, cidr, nil)).To(Succeed(), "FenceIP %s", cidr)
-				}
-				time.Sleep(5 * time.Second)
-			}
-
-			vrName := "vr-fence"
-			By("Creating VolumeReplication " + vrName + " while node is fenced (EnableVolumeReplication should fail)")
-			vr := CreateVolumeReplication(ctx, c, nsName, vrName, vrcName, pvc.Name, replicationv1alpha1.Primary)
-
-			DeferCleanup(func() {
-				cleanupCtx := context.Background()
-				if injector == helpers.FaultInjectorNetworkFence && nf != nil {
-					// Unfence first so RBD mirroring can recover before VR/PVC cleanup.
-					DeleteNetworkFenceWithCleanup(cleanupCtx, c, nf)
-				}
-				if faultProvider != nil {
-					_ = helpers.CollectFaultInjectionLogs(cleanupCtx, faultProvider)
-					_ = faultProvider.Cleanup(cleanupCtx)
-				}
-				DeleteVolumeReplicationWithCleanup(cleanupCtx, c, vr)
-				if nfc != nil {
-					DeleteNetworkFenceClassWithCleanup(cleanupCtx, c, nfc)
-				}
-				DeleteVolumeReplicationClassWithCleanup(cleanupCtx, c, vrc)
-				DeletePVCWithCleanup(cleanupCtx, c, pvc)
-				DeleteNamespace(cleanupCtx, c, ns)
-			})
-
-			By("Waiting for VR to report error (peer unreachable)")
-			WaitForVolumeReplicationError(ctx, c, vr)
-			err := c.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrName}, vr)
-			Expect(err).NotTo(HaveOccurred())
-
-			By("Assertions: GetVolumeReplicationInfo (L1-INFO-005) — peer unreachable returns error in VR status")
-			Expect(hasVolumeReplicationErrorCondition(vr)).To(BeTrue(),
-				"GetVolumeReplicationInfo (L1-INFO-005): VR with fenced/peer unreachable must have error (message or degraded condition)")
-
-			switch injector {
-			case helpers.FaultInjectorNetworkFence:
-				By("Unfencing by setting fenceState to Unfenced")
-				UnfenceNetworkFence(ctx, c, nf)
-			case helpers.FaultInjectorIptables:
-				By("Unfencing by removing iptables rules")
-				for _, cidr := range cidrs {
-					Expect(faultProvider.UnfenceIP(ctx, cidr, nil)).To(Succeed(), "UnfenceIP %s", cidr)
-				}
-			}
-
-			By("Waiting for controller to retry and EnableVolumeReplication to succeed")
-			WaitForVolumeReplicationReplicatingOrCompleted(ctx, c, vr, func(v *replicationv1alpha1.VolumeReplication) {
-				_, _ = fmt.Fprintf(GinkgoWriter, "  [VR] %s\n", FormatVRStatus(v))
-			})
-			err = c.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrName}, vr)
-			Expect(err).NotTo(HaveOccurred())
-
-			By("Assertions: EnableVolumeReplication (L1-E-003) — VR state after unfence and successful enable")
-			Expect(vr.Status.State).To(Or(Equal(replicationv1alpha1.PrimaryState), Equal(replicationv1alpha1.UnknownState)),
-				"EnableVolumeReplication: VR state must be Primary or Unknown after unfence and successful enable, got %q", vr.Status.State)
-
-			By("Assertions: GetVolumeReplicationInfo (L1-INFO-001) — replication info present after unfence")
-			Expect(vr.Status.Conditions).NotTo(BeEmpty(),
-				"GetVolumeReplicationInfo: VR status conditions must be set for healthy replication after unfence (conditions: %v)", vr.Status.Conditions)
-		})
-	})
-
-	Describe("L1-E-003A: Peer unreachable using unified FaultInjectionHandler", func() {
-		It("L1-E-003A + L1-INFO-005: unified handler abstracts fault injection; fence blocks VR with error, unfence recovers VR with healthy status", func() {
-			SkipIfNotFullDR("L1-E-003A", "requires two clusters (DR1_CONTEXT and DR2_CONTEXT) to fence peer")
+	Describe("L1-E-003-A: Peer unreachable using unified FaultInjectionHandler", func() {
+		It("L1-E-003-A + L1-INFO-005: unified handler abstracts fault injection; fence blocks VR with error, unfence recovers VR with healthy status", func() {
+			SkipIfNotFullDR("L1-E-003-A", "requires two clusters (DR1_CONTEXT and DR2_CONTEXT) to fence peer")
 
 			c := GetK8sClient()
 			cDR2 := GetK8sClientForCluster(ClusterDR2)
@@ -328,16 +171,16 @@ var _ = Describe("EnableVolumeReplication", func() {
 			// 2. Check support (skip if not supported)
 			supported, reason := handler.IsSupported(ctx)
 			if !supported {
-				Skip("L1-E-003A: fault injection not supported: " + reason)
+				Skip("L1-E-003-A: fault injection not supported: " + reason)
 			}
 
 			// 3. Discover targets FOR the peer cluster being blocked
 			By("Discovering fence targets FOR peer cluster")
 			targets := handler.DiscoverFenceTargetsForClient(ctx, cDR2)
 			if len(targets) == 0 {
-				Skip("L1-E-003A: set FENCE_CIDRS or FENCE_TARGET_SERVICES (namespace/service list); with full-DR also set FENCE_PEER_SERVICES")
+				Skip("L1-E-003-A: set FENCE_CIDRS or FENCE_TARGET_SERVICES (namespace/service list); with full-DR also set FENCE_PEER_SERVICES")
 			}
-			Logf("[TEST]", "L1-E-003A fence targets: %v (handler will add port info for iptables blocking)", targets)
+			Logf("[TEST]", "L1-E-003-A fence targets: %v (handler will add port info for iptables blocking)", targets)
 
 			// 4. Create PVC and VRC (only if targets found)
 			By("Creating PVC and waiting for Bound")
@@ -390,9 +233,9 @@ var _ = Describe("EnableVolumeReplication", func() {
 			err = c.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrName}, vr)
 			Expect(err).NotTo(HaveOccurred())
 
-			By("Assertion: L1-E-003A — VR state is healthy after unfence")
+			By("Assertion: L1-E-003-A — VR state is healthy after unfence")
 			Expect(vr.Status.State).To(Or(Equal(replicationv1alpha1.PrimaryState), Equal(replicationv1alpha1.UnknownState)),
-				"L1-E-003A: VR state must be Primary or Unknown after unfence and successful enable, got %q", vr.Status.State)
+				"L1-E-003-A: VR state must be Primary or Unknown after unfence and successful enable, got %q", vr.Status.State)
 
 			By("GetVolumeReplicationInfo (L1-INFO-005): Verify VR shows healthy status after unfence")
 			Logf("[L1-INFO-005]", "GetVolumeReplicationInfo: Fetching VR status for health verification (after unfence)")
@@ -401,6 +244,48 @@ var _ = Describe("EnableVolumeReplication", func() {
 			Logf("[L1-INFO-005]", "VR Status Conditions: %v", vr.Status.Conditions)
 			Expect(vr.Status.Conditions).NotTo(BeEmpty(),
 				"L1-INFO-005: GetVolumeReplicationInfo must return conditions for healthy replication after unfence (state: %v, message: %q, conditions: %v)", vr.Status.State, vr.Status.Message, vr.Status.Conditions)
+		})
+	})
+
+	Describe("L1-E-004: Invalid schedulingInterval parameter", func() {
+		It("L1-E-004 + L1-INFO-012: invalid schedulingInterval returns error; GetVolumeReplicationInfo returns error state", func() {
+			By("Starting L1-E-004: Invalid schedulingInterval parameter")
+			c := GetK8sClient()
+			nsName := UniqueNamespace()
+			By("Creating namespace " + nsName)
+			ns := CreateNamespace(ctx, c, nsName)
+
+			secretName, secretNs := ReplicationSecretRef(ctx, c, env, nsName)
+			By("Creating PVC and waiting for Bound")
+			pvc := CreatePVC(ctx, c, nsName, "pvc-invalid-interval", env.StorageClass, "1Gi", func(p *corev1.PersistentVolumeClaim) {
+				_, _ = fmt.Fprintf(GinkgoWriter, "  [PVC] %s\n", FormatPVCStatus(p))
+			})
+
+			vrcName := "vrc-invalid-interval-" + nsName
+			By("Creating VolumeReplicationClass with invalid schedulingInterval=5x")
+			vrc := CreateVolumeReplicationClassWithParams(ctx, c, vrcName, env.Provisioner, secretName, secretNs, MirroringModeSnapshot, map[string]string{
+				"schedulingInterval": "5x",
+			})
+
+			vrName := "vr-invalid-interval"
+			By("Creating VolumeReplication " + vrName)
+			vr := CreateVolumeReplication(ctx, c, nsName, vrName, vrcName, pvc.Name, replicationv1alpha1.Primary)
+
+			DeferCleanup(func() {
+				cleanupCtx := context.Background()
+				DeleteVolumeReplicationWithCleanup(cleanupCtx, c, vr)
+				DeleteVolumeReplicationClassWithCleanup(cleanupCtx, c, vrc)
+				DeletePVCWithCleanup(cleanupCtx, c, pvc)
+				DeleteNamespace(cleanupCtx, c, ns)
+			})
+
+			By("Waiting for error in VR status (gRPC InvalidArgument or driver error)")
+			WaitForVolumeReplicationError(ctx, c, vr)
+			err := c.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrName}, vr)
+			Expect(err).NotTo(HaveOccurred())
+			By("Assertions: L1-E-004 — invalid schedulingInterval returns error; L1-INFO-012 — GetVolumeReplicationInfo returns error state")
+			Expect(hasVolumeReplicationErrorCondition(vr)).To(BeTrue(),
+				"L1-E-004/L1-INFO-012: VR with invalid schedulingInterval must report error (message: %q)", vr.Status.Message)
 		})
 	})
 
@@ -472,48 +357,6 @@ var _ = Describe("EnableVolumeReplication", func() {
 				Expect(hasVolumeReplicationErrorCondition(vr2)).To(BeFalse(),
 					"EnableVolumeReplication: second VR should have no error when controller does not set status (idempotent no-op)")
 			}
-		})
-	})
-
-	Describe("L1-E-004: Invalid schedulingInterval parameter", func() {
-		It("L1-E-004 + L1-INFO-012: invalid schedulingInterval returns error; GetVolumeReplicationInfo returns error state", func() {
-			By("Starting L1-E-004: Invalid schedulingInterval parameter")
-			c := GetK8sClient()
-			nsName := UniqueNamespace()
-			By("Creating namespace " + nsName)
-			ns := CreateNamespace(ctx, c, nsName)
-
-			secretName, secretNs := ReplicationSecretRef(ctx, c, env, nsName)
-			By("Creating PVC and waiting for Bound")
-			pvc := CreatePVC(ctx, c, nsName, "pvc-invalid-interval", env.StorageClass, "1Gi", func(p *corev1.PersistentVolumeClaim) {
-				_, _ = fmt.Fprintf(GinkgoWriter, "  [PVC] %s\n", FormatPVCStatus(p))
-			})
-
-			vrcName := "vrc-invalid-interval-" + nsName
-			By("Creating VolumeReplicationClass with invalid schedulingInterval=5x")
-			vrc := CreateVolumeReplicationClassWithParams(ctx, c, vrcName, env.Provisioner, secretName, secretNs, MirroringModeSnapshot, map[string]string{
-				"schedulingInterval": "5x",
-			})
-
-			vrName := "vr-invalid-interval"
-			By("Creating VolumeReplication " + vrName)
-			vr := CreateVolumeReplication(ctx, c, nsName, vrName, vrcName, pvc.Name, replicationv1alpha1.Primary)
-
-			DeferCleanup(func() {
-				cleanupCtx := context.Background()
-				DeleteVolumeReplicationWithCleanup(cleanupCtx, c, vr)
-				DeleteVolumeReplicationClassWithCleanup(cleanupCtx, c, vrc)
-				DeletePVCWithCleanup(cleanupCtx, c, pvc)
-				DeleteNamespace(cleanupCtx, c, ns)
-			})
-
-			By("Waiting for error in VR status (gRPC InvalidArgument or driver error)")
-			WaitForVolumeReplicationError(ctx, c, vr)
-			err := c.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrName}, vr)
-			Expect(err).NotTo(HaveOccurred())
-			By("Assertions: L1-E-004 — invalid schedulingInterval returns error; L1-INFO-012 — GetVolumeReplicationInfo returns error state")
-			Expect(hasVolumeReplicationErrorCondition(vr)).To(BeTrue(),
-				"L1-E-004/L1-INFO-012: VR with invalid schedulingInterval must report error (message: %q)", vr.Status.Message)
 		})
 	})
 
