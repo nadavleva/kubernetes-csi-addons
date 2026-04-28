@@ -23,6 +23,8 @@
 #                          hits "test timed out after 10m0s" (e.g. 45m or 60m).
 #   GINKGO_VERBOSE          - Set to "vv" for maximal verbosity (skipped/pending in output).
 #                             Default: "v" (verbose) plus show-node-events and trace on failure.
+#   IPTABLES_IMAGE          - Container image for iptables fault injection (default: alpine:3.19).
+#                             Used by dual-cluster tests with network fault injection.
 #
 # Examples:
 #   ./hack/run-replication-e2e.sh
@@ -96,6 +98,7 @@ echo "  STORAGE_CLASS=${STORAGE_CLASS:-rook-ceph-block}"
 echo "  CSI_PROVISIONER=${CSI_PROVISIONER:-rook-ceph.rbd.csi.ceph.com}"
 echo "  DR1_CONTEXT=${DR1_CONTEXT:-<unset>}"
 echo "  DR2_CONTEXT=${DR2_CONTEXT:-<unset>}"
+echo "  IPTABLES_IMAGE=${IPTABLES_IMAGE:-csi-addons/iptables-manager:latest}"
 echo "  GINKGO_FOCUS=${GINKGO_FOCUS:-<all>}"
 echo ""
 
@@ -114,7 +117,151 @@ else
 fi
 echo ""
 
-echo "[4/5] Running replication E2E tests (timeout ${REPLICATION_TEST_TIMEOUT}, output tee'd to ${LOG_FILE})..."
+echo "[3.5/6] Preparing iptables image for fault injection..."
+
+# Simple function to load image to cluster
+load_image_to_cluster() {
+	local context="$1"
+	local image="$2"
+	
+	echo "  [DEBUG] Attempting to load image '$image' to context '$context'"
+	
+	# Test if image is accessible first
+	local test_pod="image-test-$(date +%s)"
+	echo "  [DEBUG] Testing image accessibility in context '$context'"
+	if kubectl --context="$context" run "$test_pod" --image="$image" --restart=Never --rm --timeout=30s --command -- echo "ok" >/dev/null 2>&1; then
+		echo "Image $image already accessible in $context"
+		return 0
+	fi
+	echo "  [DEBUG] Image not yet accessible in context, attempting to load..."
+	
+	# Try to load for kind clusters
+	if command -v kind >/dev/null 2>&1; then
+		local cluster_name="$context"
+		[[ "$context" =~ kind- ]] && cluster_name="$(echo "$context" | sed 's/kind-//')"
+		
+		if kind get clusters 2>/dev/null | grep -q "^${cluster_name}$"; then
+			echo "Loading via kind to cluster: $cluster_name"
+			kind load docker-image "$image" --name="$cluster_name" && return 0
+		fi
+	fi
+	
+	# Try to load for k3d clusters
+	if command -v k3d >/dev/null 2>&1; then
+		local cluster_name="$context"
+		[[ "$context" =~ k3d- ]] && cluster_name="$(echo "$context" | sed 's/k3d-//')"
+		
+		if k3d cluster list 2>/dev/null | grep -q "$cluster_name"; then
+			echo "Loading via k3d to cluster: $cluster_name"
+			k3d image import "$image" --cluster="$cluster_name" && return 0
+		fi
+	fi
+	
+	# Try to load for minikube clusters
+	if command -v minikube >/dev/null 2>&1; then
+		local cluster_name="$context"
+		# Extract cluster name from context (remove minikube- prefix if present)
+		[[ "$context" =~ minikube- ]] && cluster_name="$(echo "$context" | sed 's/minikube-//')"
+		
+		echo "  [DEBUG] Checking for minikube profile: '$cluster_name'"
+		if minikube profile list 2>/dev/null | grep -q "^${cluster_name}"; then
+			echo "Loading via minikube to cluster: $cluster_name"
+			# Detect container runtime (podman/docker) for save command
+			if command -v podman >/dev/null 2>&1; then
+				CONTAINER_CMD="podman"
+			elif command -v docker >/dev/null 2>&1; then
+				CONTAINER_CMD="docker"
+			else
+				echo "  [DEBUG] Neither podman nor docker found, cannot load image"
+				return 1
+			fi
+			echo "  [DEBUG] Running: $CONTAINER_CMD save '$image' | minikube image load --profile='$cluster_name' -"
+			$CONTAINER_CMD save "$image" | minikube image load --profile="$cluster_name" - && return 0
+		else
+			echo "  [DEBUG] Minikube profile '$cluster_name' not found in profile list"
+		fi
+	fi
+	
+	echo "Cannot load $image to $context (not kind/k3d/minikube or image not in registry)"
+	return 1
+}
+
+prepare_iptables_image() {
+	local iptables_image="${IPTABLES_IMAGE:-csi-addons/iptables-manager:latest}"
+	
+	# Use pre-built iptables image with all tools included
+	# No fallback to alpine - the custom image has everything needed
+	echo "  Using pre-built iptables image: $iptables_image"
+	
+	# Only attempt to load image to clusters if DR contexts are set (dual-cluster testing)
+	if [[ -n "${DR1_CONTEXT:-}" && -n "${DR2_CONTEXT:-}" ]]; then
+		echo "  Detected dual-cluster setup (DR1_CONTEXT=${DR1_CONTEXT}, DR2_CONTEXT=${DR2_CONTEXT})"
+		
+		# Detect container command
+		if command -v podman > /dev/null 2>&1; then
+			CONTAINER_CMD="podman"
+		elif command -v docker > /dev/null 2>&1; then
+			CONTAINER_CMD="docker"
+		else
+			echo "  WARNING: Neither podman nor docker found, skipping pre-cluster image loading"
+			echo "  (Image should already be available in clusters)"
+		fi
+		
+		# Normalize image name - remove localhost/ prefix if present (podman may add it)
+		iptables_image="${iptables_image#localhost/}"
+		echo "  Using normalized image: $iptables_image"
+		
+		# Build custom iptables image if needed
+		if [[ "$iptables_image" == "csi-addons/iptables-manager:latest" ]]; then
+			echo "  Checking if custom iptables image needs to be built..."
+			if ! $CONTAINER_CMD images --format "table {{.Repository}}:{{.Tag}}" | grep -E "(^|/)csi-addons/iptables-manager:latest\$" >/dev/null 2>&1; then
+				echo "  Building custom iptables image..."
+				if [[ -f "${REPO_ROOT}/build/Containerfile.iptables" ]]; then
+					if $CONTAINER_CMD build -t "csi-addons/iptables-manager:latest" -f "${REPO_ROOT}/build/Containerfile.iptables" "${REPO_ROOT}/build/" >/dev/null 2>&1; then
+						echo "  ✓ Successfully built custom iptables image"
+					else
+						echo "  WARNING: Failed to build custom iptables image, will attempt to use existing"
+					fi
+				else
+					echo "  WARNING: Containerfile.iptables not found, will attempt to use existing image"
+				fi
+			else
+				echo "  ✓ Custom iptables image already exists locally"
+			fi
+		fi
+		
+		echo "  Attempting to load image $iptables_image to DR clusters..."
+		
+		# Load to DR1 cluster (non-fatal if fails - image may already be there)
+		echo "    Loading to DR1 cluster ($DR1_CONTEXT)..."
+		if load_image_to_cluster "$DR1_CONTEXT" "$iptables_image"; then
+			echo "    ✓ Successfully loaded to DR1"
+		else
+			echo "    ℹ Image not pre-loaded to DR1 (will pull from registry if available)"
+		fi
+		
+		# Load to DR2 cluster (non-fatal if fails - image may already be there)
+		echo "    Loading to DR2 cluster ($DR2_CONTEXT)..."
+		if load_image_to_cluster "$DR2_CONTEXT" "$iptables_image"; then
+			echo "    ✓ Successfully loaded to DR2"
+		else
+			echo "    ℹ Image not pre-loaded to DR2 (will pull from registry if available)"
+		fi
+		
+		echo "  ✓ Ready to use pre-built iptables image in clusters"
+	else
+		echo "  Single-cluster mode: skipping pre-cluster image load"
+	fi
+	
+	# Always export the pre-built image (no alpine fallback)
+	export E2E_IPTABLES_IMAGE="$iptables_image"
+}
+
+# Call the image preparation function
+prepare_iptables_image
+echo ""
+
+echo "[4/6] Running replication E2E tests (timeout ${REPLICATION_TEST_TIMEOUT}, output tee'd to ${LOG_FILE})..."
 echo "  Use REPLICATION_POLL_TIMEOUT=600 if Replicating=True times out."
 echo "  Use REPLICATION_TEST_TIMEOUT=45m or 60m if suite hits test timeout."
 echo ""
@@ -141,7 +288,7 @@ if [[ -n "${GINKGO_SKIP:-}" ]]; then
 	GINKGO_SKIP_FLAG=("--ginkgo.skip=${GINKGO_SKIP}")
 fi
 
-echo "[4/5] Ginkgo options: ${GINKGO_EXTRA} ${GINKGO_FOCUS_FLAG[*]} ${GINKGO_SKIP_FLAG[*]}"
+echo "[4/6] Ginkgo options: ${GINKGO_EXTRA} ${GINKGO_FOCUS_FLAG[*]} ${GINKGO_SKIP_FLAG[*]}"
 echo ""
 
 # Run tests with extended timeout (default 30m); cleanup runs on EXIT trap even on panic/timeout.
@@ -155,6 +302,6 @@ EXIT_CODE="${PIPESTATUS[0]}"
 set -e
 
 echo ""
-echo "[5/5] Done. Log file: ${LOG_FILE}"
+echo "[6/6] Done. Log file: ${LOG_FILE}"
 echo "      (Detailed summary and per-spec results are included in the log above.)"
 exit "${EXIT_CODE}"
