@@ -10,7 +10,7 @@ The replication end-to-end suite runs cluster-facing tests that create VolumeRep
 
 ## Location
 
-- **Package**: `test/e2e/replication/`
+- **Package**: `test/end-to-end/replication/`
 - **Scenarios**: EnableVolumeReplication (L1-E-001 through L1-E-009), DisableVolumeReplication (L1-DIS-001, L1-DIS-002),
   GetVolumeReplicationInfo (L1-INFO-001, L1-INFO-005, L1-INFO-008, L1-INFO-011, L1-INFO-012, L1-INFO-013, L1-INFO-014), and Full DR (two clusters).
   L1-E-003 blocks the peer via **iptables** (default) or **NetworkFence** (`E2E_FAULT_INJECTOR`) so EnableVolumeReplication fails, then unfences and asserts success.
@@ -53,13 +53,13 @@ for the full issue description.
 ### Run all replication end-to-end tests
 
 ```bash
-make test-replication-e2e
+make test-replication-end-to-end
 ```
 
 Or directly:
 
 ```bash
-./hack/run-replication-e2e.sh
+./hack/run-replication-end-to-end.sh
 ```
 
 Output is written to `Logs/replication-e2e_<timestamp>.log` and to stdout. The run script uses `stdbuf -oL` (when available) so output is line-buffered and appears as tests run instead of only at the end. Each test logs steps (e.g. "Starting L1-E-001", "Creating namespace", "Creating PVC...", "[PVC] ns/name phase=...", "[VR] ...") so you can see progress during long waits.
@@ -70,19 +70,19 @@ Use the `GINKGO_FOCUS` environment variable to run only tests whose descriptions
 
 ```bash
 # Run a single test by Layer-1 ID
-GINKGO_FOCUS="L1-E-001" ./hack/run-replication-e2e.sh
+GINKGO_FOCUS="L1-E-001" ./hack/run-replication-end-to-end.sh
 
 # Run all EnableVolumeReplication tests
-GINKGO_FOCUS="EnableVolumeReplication" ./hack/run-replication-e2e.sh
+GINKGO_FOCUS="EnableVolumeReplication" ./hack/run-replication-end-to-end.sh
 
 # Run all GetVolumeReplicationInfo tests
-GINKGO_FOCUS="GetVolumeReplicationInfo" ./hack/run-replication-e2e.sh
+GINKGO_FOCUS="GetVolumeReplicationInfo" ./hack/run-replication-end-to-end.sh
 ```
 
 With make:
 
 ```bash
-make test-replication-e2e GINKGO_FOCUS="L1-E-001"
+make test-replication-end-to-end GINKGO_FOCUS="L1-E-001"
 ```
 
 ### Optional environment variables
@@ -118,13 +118,13 @@ Examples:
 
 ```bash
 # Run with iptables fault injection (default)
-make test-replication-e2e GINKGO_FOCUS="L1-E-003"
+make test-replication-end-to-end GINKGO_FOCUS="L1-E-003"
 
 # Run with NetworkFence CSI fault injection (recommended for CSI-Addons testing)
-E2E_FAULT_INJECTOR=networkfence make test-replication-e2e GINKGO_FOCUS="L1-E-003"
+E2E_FAULT_INJECTOR=networkfence make test-replication-end-to-end GINKGO_FOCUS="L1-E-003"
 
 # Disable fault injection entirely (skip L1-E-003)
-E2E_FAULT_INJECTOR=none make test-replication-e2e
+E2E_FAULT_INJECTOR=none make test-replication-end-to-end
 ```
 
 **L1-E-003 NetworkFence (Ceph CSI):** The Ceph CSI driver requires `clusterID` in NetworkFenceClass parameters for network fencing. For Rook, use the cluster namespace (e.g. `rook-ceph`). The end-to-end suite adds this automatically when the provisioner contains "ceph":
@@ -152,7 +152,7 @@ For a real Ceph cluster (e.g. Rook), use the existing RBD CSI secret by setting 
 Example:
 
 ```bash
-REPLICATION_SECRET_NAME=rook-csi-rbd-provisioner REPLICATION_SECRET_NAMESPACE=rook-ceph make test-replication-e2e
+REPLICATION_SECRET_NAME=rook-csi-rbd-provisioner REPLICATION_SECRET_NAMESPACE=rook-ceph make test-replication-end-to-end
 ```
 
 ## Test Implementation Status
@@ -890,14 +890,14 @@ The end-to-end helpers (`hasVolumeReplicationErrorCondition`, `WaitForVolumeRepl
 
 ## Single cluster vs full DR (two clusters)
 
-**Single cluster (default):** Omit `DR1_CONTEXT` and `DR2_CONTEXT`; the suite uses the current kubeconfig context. Use `kubectl config use-context <name>` then `make test-replication-e2e` to target a cluster.
+**Single cluster (default):** Omit `DR1_CONTEXT` and `DR2_CONTEXT`; the suite uses the current kubeconfig context. Use `kubectl config use-context <name>` then `make test-replication-end-to-end` to target a cluster.
 
 The end-to-end suite creates all resources (namespaces, PVCs, VolumeReplications, VolumeReplicationClasses) in **the cluster that your kubeconfig is currently using**. It does not have a built-in notion of “DR1” vs “DR2”; it simply uses the default context (or the one set by `KUBECONFIG`).
 
 **Full DR mode (two clusters):** Set both `DR1_CONTEXT` and `DR2_CONTEXT` to context names in your kubeconfig. The suite builds two clients, uses DR1 as primary, and runs "Full DR (two clusters)" tests. Example:
 
 ```bash
-DR1_CONTEXT=dr1 DR2_CONTEXT=dr2 REPLICATION_SECRET_NAME=rook-csi-rbd-provisioner REPLICATION_SECRET_NAMESPACE=rook-ceph make test-replication-e2e
+DR1_CONTEXT=dr1 DR2_CONTEXT=dr2 REPLICATION_SECRET_NAME=rook-csi-rbd-provisioner REPLICATION_SECRET_NAMESPACE=rook-ceph make test-replication-end-to-end
 ```
 
 Use `GetK8sClientForCluster(ClusterDR1)` and `GetK8sClientForCluster(ClusterDR2)` to target either cluster in tests.
@@ -906,7 +906,7 @@ Use `GetK8sClientForCluster(ClusterDR1)` and `GetK8sClientForCluster(ClusterDR2)
 
 ## Note
 
-These tests require `USE_EXISTING_CLUSTER=true`. Do not run them with `make test` (which uses envtest and no real cluster). Use `make test-replication-e2e` or `./hack/run-replication-e2e.sh` instead.
+These tests require `USE_EXISTING_CLUSTER=true`. Do not run them with `make test` (which uses envtest and no real cluster). Use `make test-replication-end-to-end` or `./hack/run-replication-end-to-end.sh` instead.
 
 ---
 

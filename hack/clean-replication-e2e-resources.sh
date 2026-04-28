@@ -19,18 +19,23 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck disable=SC2034  # REPO_ROOT may be used in future or for debugging
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 DRY_RUN=false
 CONTEXTS=()
 
 for arg in "$@"; do
 	case "$arg" in
-		--dry-run) DRY_RUN=true ;;
-		--contexts) 
-			shift
-			IFS=',' read -ra CONTEXTS <<< "$1"
-			;;
-		*) echo "Unknown option: $arg"; echo "Usage: $0 [--dry-run] [--contexts <context1,context2,...>]"; exit 1 ;;
+	--dry-run) DRY_RUN=true ;;
+	--contexts)
+		shift
+		IFS=',' read -ra CONTEXTS <<<"$1"
+		;;
+	*)
+		echo "Unknown option: $arg"
+		echo "Usage: $0 [--dry-run] [--contexts <context1,context2,...>]"
+		exit 1
+		;;
 	esac
 done
 
@@ -64,7 +69,6 @@ if [[ ${#CONTEXTS[@]} -eq 0 ]]; then
 	echo "ERROR: No Kubernetes contexts found to clean."
 	exit 1
 fi
-
 
 # Helper to run kubectl in a specific context
 kubectl_ctx() {
@@ -107,7 +111,7 @@ echo ""
 for CURRENT_CTX in "${CONTEXTS[@]}"; do
 	echo "Processing context: $CURRENT_CTX"
 	echo "=========================================="
-	
+
 	# 1) Namespaces matching e2e-replication-*
 	mapfile -t NAMESPACES < <(kubectl_ctx "$CURRENT_CTX" get namespaces -o jsonpath='{.items[*].metadata.name}' 2>/dev/null | tr ' ' '\n' | grep -E '^e2e-replication-' || true)
 	if [[ ${#NAMESPACES[@]} -eq 0 ]]; then
@@ -120,14 +124,16 @@ for CURRENT_CTX in "${CONTEXTS[@]}"; do
 			if kubectl_ctx "$CURRENT_CTX" get crd volumereplications.replication.storage.openshift.io &>/dev/null; then
 				for n in $(kubectl_ctx "$CURRENT_CTX" get vr -n "$ns" -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do
 					remove_vr_finalizer "$CURRENT_CTX" "$ns" "$n"
-					[[ "$DRY_RUN" != "true" ]] && kubectl_ctx "$CURRENT_CTX" delete vr -n "$ns" "$n" --ignore-not-found --timeout=15s 2>/dev/null || true
+					# shellcheck disable=SC2015  # Safe because || true always succeeds
+					[[ "$DRY_RUN" != "true" ]] && { kubectl_ctx "$CURRENT_CTX" delete vr -n "$ns" "$n" --ignore-not-found --timeout=15s 2>/dev/null; } || true
 				done
 			fi
 
 			# PVCs: remove finalizers then delete
 			for pvc in $(kubectl_ctx "$CURRENT_CTX" get pvc -n "$ns" -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do
 				remove_pvc_finalizer "$CURRENT_CTX" "$ns" "$pvc"
-				[[ "$DRY_RUN" != "true" ]] && kubectl_ctx "$CURRENT_CTX" delete pvc -n "$ns" "$pvc" --ignore-not-found --timeout=15s 2>/dev/null || true
+				# shellcheck disable=SC2015  # Safe because || true always succeeds
+				[[ "$DRY_RUN" != "true" ]] && { kubectl_ctx "$CURRENT_CTX" delete pvc -n "$ns" "$pvc" --ignore-not-found --timeout=15s 2>/dev/null; } || true
 			done
 
 			# VolumeSnapshots (if CRD exists)
@@ -199,12 +205,13 @@ for CURRENT_CTX in "${CONTEXTS[@]}"; do
 	# Check if NetworkFence has invalid CIDR data
 	has_invalid_cidr() {
 		local name="$1"
-		local cidrs=$(kubectl_ctx "$CURRENT_CTX" get networkfence "$name" -o jsonpath='{.spec.cidrs[0]}' 2>/dev/null || echo "")
+		local cidrs
+		cidrs=$(kubectl_ctx "$CURRENT_CTX" get networkfence "$name" -o jsonpath='{.spec.cidrs[0]}' 2>/dev/null || echo "")
 		# Check for common invalid CIDR patterns
 		if [[ "$cidrs" == "not-a-valid-cidr" ]] || [[ "$cidrs" == "" ]] || [[ "$cidrs" == "null" ]]; then
-			return 0  # Has invalid CIDR
+			return 0 # Has invalid CIDR
 		fi
-		return 1  # CIDR appears valid
+		return 1 # CIDR appears valid
 	}
 
 	# Wait for NetworkFence to report Succeeded result (after unfencing)
@@ -214,7 +221,8 @@ for CURRENT_CTX in "${CONTEXTS[@]}"; do
 		local timeout=30
 		local waited=0
 		while [[ $waited -lt $timeout ]]; do
-			local result=$(kubectl_ctx "$CURRENT_CTX" get networkfence "$name" -o jsonpath='{.status.result}' 2>/dev/null || echo "")
+			local result
+			result=$(kubectl_ctx "$CURRENT_CTX" get networkfence "$name" -o jsonpath='{.status.result}' 2>/dev/null || echo "")
 			if [[ "$result" == "Succeeded" ]]; then
 				return 0
 			elif [[ "$result" == "Failed" ]]; then
@@ -238,11 +246,11 @@ for CURRENT_CTX in "${CONTEXTS[@]}"; do
 					echo "  [dry-run] would unfence and delete NetworkFence $nf"
 				else
 					echo "  Processing NetworkFence $nf..."
-					
+
 					# Get CIDR info for diagnostics
 					cidrs=$(kubectl_ctx "$CURRENT_CTX" get networkfence "$nf" -o jsonpath='{.spec.cidrs}' 2>/dev/null || echo "[]")
 					echo "  CIDRs: $cidrs"
-					
+
 					# Check for invalid CIDR and skip unfencing if found
 					if has_invalid_cidr "$nf"; then
 						echo "  NetworkFence $nf has invalid CIDR, removing finalizer and forcing deletion..."
@@ -260,10 +268,10 @@ for CURRENT_CTX in "${CONTEXTS[@]}"; do
 							remove_networkfence_finalizer "$nf"
 						fi
 					fi
-					
+
 					# Delete the NetworkFence (with grace period 0 for faster removal)
 					kubectl_ctx "$CURRENT_CTX" delete networkfence "$nf" --ignore-not-found --grace-period=0 --force 2>/dev/null || true
-					
+
 					# Wait a moment and check if still present
 					sleep 1
 					if kubectl_ctx "$CURRENT_CTX" get networkfence "$nf" &>/dev/null; then
@@ -286,22 +294,22 @@ for CURRENT_CTX in "${CONTEXTS[@]}"; do
 					echo "  [dry-run] would delete NetworkFenceClass $nfc"
 				else
 					echo "  Deleting NetworkFenceClass $nfc..."
-				# Delete the NetworkFenceClass (with grace period 0 for faster removal)
-				kubectl_ctx "$CURRENT_CTX" delete networkfenceclass "$nfc" --ignore-not-found --grace-period=0 --force 2>/dev/null || true
-				# Check if still present
-				sleep 1
-				if kubectl_ctx "$CURRENT_CTX" get networkfenceclass "$nfc" &>/dev/null; then
-					echo "  NetworkFenceClass $nfc stuck, removing finalizer..."
-					remove_networkfenceclass_finalizer "$nfc"
-					sleep 1
+					# Delete the NetworkFenceClass (with grace period 0 for faster removal)
 					kubectl_ctx "$CURRENT_CTX" delete networkfenceclass "$nfc" --ignore-not-found --grace-period=0 --force 2>/dev/null || true
+					# Check if still present
+					sleep 1
+					if kubectl_ctx "$CURRENT_CTX" get networkfenceclass "$nfc" &>/dev/null; then
+						echo "  NetworkFenceClass $nfc stuck, removing finalizer..."
+						remove_networkfenceclass_finalizer "$nfc"
+						sleep 1
+						kubectl_ctx "$CURRENT_CTX" delete networkfenceclass "$nfc" --ignore-not-found --grace-period=0 --force 2>/dev/null || true
 					fi
 					echo "  Deleted NetworkFenceClass $nfc"
 				fi
 			fi
 		done
 	fi
-	
+
 	echo ""
 done
 
