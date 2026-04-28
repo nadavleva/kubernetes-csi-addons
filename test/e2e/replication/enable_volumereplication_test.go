@@ -292,7 +292,10 @@ var _ = Describe("EnableVolumeReplication", func() {
 
 	Describe("L1-E-003A: Peer unreachable using unified FaultInjectionHandler", func() {
 		It("L1-E-003A + L1-INFO-005: unified handler abstracts fault injection; fence blocks VR with error, unfence recovers VR with healthy status", func() {
+			SkipIfNotFullDR("L1-E-003A", "requires two clusters (DR1_CONTEXT and DR2_CONTEXT) to fence peer")
+
 			c := GetK8sClient()
+			cDR2 := GetK8sClientForCluster(ClusterDR2)
 
 			// Create namespace FIRST (handler needs it for resource creation)
 			nsName := UniqueNamespace()
@@ -310,15 +313,13 @@ var _ = Describe("EnableVolumeReplication", func() {
 				Client:     c,
 				RESTConfig: GetRESTConfig(),
 				Namespace:  nsName,
+				PeerClient: cDR2,
 				ProviderParams: map[string]string{
 					"provisioner":     env.Provisioner,
 					"image":           helpers.DefaultIptablesImageWithRegistry,
 					"secretName":      secretName,
 					"secretNamespace": secretNs,
 				},
-			}
-			if IsFullDRMode() {
-				faultConfig.PeerClient = GetK8sClientForCluster(ClusterDR2)
 			}
 
 			handler, err := helpers.NewFaultInjectionHandler(ctx, faultConfig)
@@ -330,9 +331,9 @@ var _ = Describe("EnableVolumeReplication", func() {
 				Skip("L1-E-003A: fault injection not supported: " + reason)
 			}
 
-			// 3. Discover targets via handler (encapsulates full-DR detection + fallback logic)
-			By("Discovering fence targets (handler uses same logic as L1-E-003)")
-			targets := handler.DiscoverFenceTargets(ctx)
+			// 3. Discover targets FOR the peer cluster being blocked
+			By("Discovering fence targets FOR peer cluster")
+			targets := handler.DiscoverFenceTargetsForClient(ctx, cDR2)
 			if len(targets) == 0 {
 				Skip("L1-E-003A: set FENCE_CIDRS or FENCE_TARGET_SERVICES (namespace/service list); with full-DR also set FENCE_PEER_SERVICES")
 			}
