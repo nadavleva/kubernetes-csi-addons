@@ -102,8 +102,13 @@ type FaultInjectionConfig struct {
 	// Type specifies which fault injection mechanism to use
 	Type FaultInjectorType
 
-	// Client is the Kubernetes client for cluster operations
+	// Client is the Kubernetes client for cluster operations (current/fencing cluster)
 	Client client.Client
+
+	// PeerClient is the Kubernetes client for the peer cluster (optional, for full-DR scenarios).
+	// Required for full-DR iptables discovery to resolve FENCE_PEER_SERVICES on the peer cluster.
+	// Leave nil for single-cluster scenarios or when peer client is not available.
+	PeerClient client.Client
 
 	// Namespace for provider resources (DaemonSets, etc.)
 	Namespace string

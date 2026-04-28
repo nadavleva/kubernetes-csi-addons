@@ -309,15 +309,16 @@ REPLICATION_SECRET_NAME=rook-csi-rbd-provisioner REPLICATION_SECRET_NAMESPACE=ro
 
 ---
 
-## ResyncVolumeReplication API (5 specs, 5 test cases) - Scaffold
+## ResyncVolumeReplication API (6 specs, 6 test cases)
 
-| Spec             | Status      | Description                        | Duration | Requirements           |
-| ---------------- | ----------- | ---------------------------------- | -------- | ---------------------- |
-| **L1-RSYNC-001** | 🏗️ Scaffold | Resync secondary after split-brain | -        | Full DR mode           |
-| **L1-RSYNC-002** | 🏗️ Scaffold | Idempotent resync                  | -        | Full DR mode           |
-| **L1-RSYNC-003** | 🏗️ Scaffold | Resync with NetworkFence           | -        | Full DR + NetworkFence |
-| **L1-RSYNC-004** | 🏗️ Scaffold | Force resync                       | -        | Full DR mode           |
-| **L1-RSYNC-005** | 🏗️ Scaffold | Resync error handling              | -        | Full DR mode           |
+| Spec             | Status         | Description                             | Duration | Requirements             |
+| ---------------- | -------------- | --------------------------------------- | -------- | ------------------------ |
+| **L1-RSYNC-001** | ✅ Implemented | Resync after split-brain (NetworkFence) | ~225s    | Full DR + NetworkFence   |
+| **L1-RSYNC-002** | ✅ Implemented | Idempotent resync (healthy secondary)   | ~240s    | Full DR mode             |
+| **L1-RSYNC-003** | ✅ Implemented | NetworkFence split-brain recovery       | ~260s    | Full DR + NetworkFence   |
+| **L1-RSYNC-004** | 🏗️ Scaffold    | Force resync                            | -        | Full DR mode             |
+| **L1-RSYNC-005** | 🏗️ Scaffold    | Resync error handling                   | -        | Full DR mode             |
+| **L1-RSYNC-006** | ✅ Implemented | Graceful degradation and recovery       | ~200s    | Full DR (all fault inj.) |
 
 **Status**: Scaffolded but not yet implemented (tests exist but may be incomplete or skipped)
 

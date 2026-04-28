@@ -551,6 +551,58 @@ func HasVolumeReplicationErrorCondition(vr *replicationv1alpha1.VolumeReplicatio
 	return hasVolumeReplicationErrorCondition(vr)
 }
 
+// TriggerVolumeReplicationResync triggers a manual resync of a VolumeReplication by setting
+// spec.replicationState = "resync" and waiting for the resync to complete (Replicating=True or Completed=True).
+// Used after network recovery/unfencing to accelerate RBD mirror recovery without waiting for passive polling interval.
+// Timeout: uses getReplicationPollTimeout() (default 300s from REPLICATION_POLL_TIMEOUT or env).
+// If onPoll is non-nil, it is called after each poll so tests can log progress.
+// IMPORTANT: Fetches latest VR state before updating and monitors for error conditions during resync.
+func TriggerVolumeReplicationResync(ctx context.Context, c client.Client, vr *replicationv1alpha1.VolumeReplication, onPoll func(*replicationv1alpha1.VolumeReplication)) {
+	key := client.ObjectKeyFromObject(vr)
+
+	// Fetch latest VR before update to ensure we have current state
+	err := c.Get(ctx, key, vr)
+	Expect(err).NotTo(HaveOccurred())
+
+	// Trigger resync by setting ReplicationState to Resync
+	vr.Spec.ReplicationState = replicationv1alpha1.Resync
+	err = c.Update(ctx, vr)
+	Expect(err).NotTo(HaveOccurred())
+
+	// Wait for resync to complete (Replicating=True or Completed=True)
+	// Also check for error conditions that indicate resync failed
+	timeout := getReplicationPollTimeout()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		// Fetch latest VR state to check progress
+		err := c.Get(ctx, key, vr)
+		if err != nil {
+			time.Sleep(pollInterval)
+			continue
+		}
+		if onPoll != nil {
+			onPoll(vr)
+		}
+
+		// Check for resync success (Replicating=True or Completed=True)
+		if hasReplicationSuccessCondition(vr) {
+			return // resync completed successfully
+		}
+
+		// Check for resync error conditions (e.g., RBD image not found, peer unreachable)
+		if hasVolumeReplicationErrorCondition(vr) {
+			ginkgo.Fail(fmt.Sprintf("VolumeReplication %s/%s resync failed with error: %s (state=%s, message=%q)",
+				vr.Namespace, vr.Name, vr.Status.State, vr.Status.State, vr.Status.Message))
+		}
+
+		time.Sleep(pollInterval)
+	}
+
+	// Timeout reached - use Ginkgo's Fail() for idiomatic test failure
+	ginkgo.Fail(fmt.Sprintf("VolumeReplication %s/%s resync did not complete within %v (state=%s, message=%q)",
+		vr.Namespace, vr.Name, timeout, vr.Status.State, vr.Status.Message))
+}
+
 // WaitForVolumeReplicationInfoWithStatus waits until GetVolumeReplicationInfo would report a specific status
 // (e.g., "healthy", "degraded", "syncing"). This is called via VR status polling and formatting for logging.
 // The status parameter is typically "healthy", "degraded", "syncing", "disconnected", or "error".
@@ -907,14 +959,16 @@ func CreateNetworkFenceClass(ctx context.Context, c client.Client, name, provisi
 }
 
 // GetFenceCIDRsForFaultInjection returns CIDRs for the iptables fault injector only (not NetworkFence).
-// Order: 1) FENCE_CIDRS, 2) service/backend IPs (Endpoints + EndpointSlice). Raw cluster node InternalIPs are
-// never used as fence targets (avoids blocking the fencing node); use FENCE_CIDRS if you must target a node IP.
+// Order: 1) FENCE_CIDRS env, 2) service/backend IPs (port-aware discovery), 3) auto-discovery from endpoints.
+// Uses GetNodeIPsForFencing for consistency with NetworkFence; GetNodeIPsForFencing excludes raw node
+// InternalIPs from iptables targets (avoids blocking control-plane traffic).
 func GetFenceCIDRsForFaultInjection(ctx context.Context, c client.Client) []string {
 	if cidrs := parseFenceCIDRSFromEnv(); len(cidrs) > 0 {
 		Logf("[DEBUG]", "GetFenceCIDRsForFaultInjection: Using FENCE_CIDRS env: %v", cidrs)
 		return cidrs
 	}
-	Logf("[INFO]", "GetFenceCIDRsForFaultInjection: resolving targets via GetNodeIPsForFencing (iptables: no raw node-IP fence targets)")
+	// Delegate to GetNodeIPsForFencing for consistency with L1-E-003 and NetworkFence.
+	// It tries: 1) FENCE_TARGET_SERVICES service backends, 2) auto-discovered endpoints from default namespaces
 	return GetNodeIPsForFencing(ctx, c)
 }
 
@@ -1222,6 +1276,119 @@ func collectServiceBackendIPs(ctx context.Context, c client.Client, key client.O
 	return ips
 }
 
+// collectServiceBackendIPsWithPorts collects backend IPs and service ports from EndpointSlices.
+// Returns pairs in "IP:port" format (e.g., "192.168.1.10:6800").
+// If EndpointSlice has no ports, returns plain IP (backward compatible).
+func collectServiceBackendIPsWithPorts(ctx context.Context, c client.Client, key client.ObjectKey) []string {
+	sliceList := &discoveryv1.EndpointSliceList{}
+	listOpts := []client.ListOption{
+		client.InNamespace(key.Namespace),
+		client.MatchingLabels{discoveryv1.LabelServiceName: key.Name},
+	}
+	if err := c.List(ctx, sliceList, listOpts...); err != nil {
+		Logf("[DEBUG]", "collectServiceBackendIPsWithPorts: list EndpointSlices %s/%s: %v", key.Namespace, key.Name, err)
+		return nil
+	}
+
+	var result []string
+	seen := make(map[string]struct{})
+
+	for i := range sliceList.Items {
+		slice := &sliceList.Items[i]
+
+		// Get the port from EndpointSlice (if available)
+		var port int32
+		hasPort := false
+		if len(slice.Ports) > 0 && slice.Ports[0].Port != nil {
+			port = *slice.Ports[0].Port
+			hasPort = true
+		}
+
+		// Add endpoints with port info if available
+		for j := range slice.Endpoints {
+			for _, addr := range slice.Endpoints[j].Addresses {
+				if addr == "" {
+					continue
+				}
+
+				var pair string
+				if hasPort {
+					pair = fmt.Sprintf("%s:%d", addr, port)
+				} else {
+					pair = addr
+				}
+
+				if _, ok := seen[pair]; !ok {
+					seen[pair] = struct{}{}
+					result = append(result, pair)
+				}
+			}
+		}
+	}
+
+	return result
+}
+
+// ipPortToCIDR converts "IP:port" or plain IP to "IP/MASK" format.
+// For iptables: "192.168.1.10:6800" -> "192.168.1.10/32:6800" (port prevents fencing entire node)
+// For plain IPs: "192.168.1.10" -> "192.168.1.10/32"
+// Note: NetworkFence handlers will strip the port before fencing (operates at storage layer)
+func ipPortToCIDR(ipPort string) string {
+	// Check if port is present
+	if idx := strings.LastIndex(ipPort, ":"); idx > 0 && ipPort[0:idx] != "[" { // [ipv6]:port case
+		ip := ipPort[0:idx]
+		port := ipPort[idx:] // includes the colon
+		cidr := ipToFenceCIDR(ip)
+		if cidr == "" {
+			return ""
+		}
+		// Keep port in CIDR format (needed for iptables to avoid blocking entire node)
+		return cidr + port
+	}
+
+	// No port - just convert IP to CIDR
+	return ipToFenceCIDR(ipPort)
+}
+
+// filterEndpointIPsWithPortsToCIDRs filters IP:port pairs, excluding node IPs without ports.
+// When IP:port is specified (service-specific), allow node IPs because:
+// - Ports target specific services, not general node traffic (safe for iptables)
+// - NetworkFence operates at storage driver layer, not network layer (node IP doesn't matter)
+func filterEndpointIPsWithPortsToCIDRs(ipPorts []string, nodeIPs map[string]struct{}) []string {
+	seen := make(map[string]struct{})
+	var out []string
+	for _, ipPort := range ipPorts {
+		// Extract IP from "IP:port" format
+		ip := ipPort
+		hasPort := false
+		if idx := strings.LastIndex(ipPort, ":"); idx > 0 && ipPort[0:idx] != "[" {
+			ip = ipPort[0:idx]
+			hasPort = true
+		}
+
+		// Skip if IP matches a node InternalIP, BUT ONLY if there's no port
+		// When port is specified (IP:port), it's a service-specific target and safe to use even on nodes
+		if !hasPort {
+			if _, onNode := nodeIPs[ip]; onNode {
+				Logf("[DEBUG]", "filterEndpointIPsWithPorts: skip %s (IP %s matches node InternalIP — avoids fencing apiserver/kubelet host)", ipPort, ip)
+				continue
+			}
+		}
+
+		// Convert to CIDR format
+		cidr := ipPortToCIDR(ipPort)
+		if cidr == "" {
+			continue
+		}
+		if _, ok := seen[cidr]; ok {
+			continue
+		}
+		seen[cidr] = struct{}{}
+		out = append(out, cidr)
+	}
+	return out
+}
+
 func fenceCIDRsFromConfiguredTargetServices(ctx context.Context, c client.Client, nodeIPs map[string]struct{}) []string {
 	keys := parseFenceTargetServicesFromEnv()
 	if len(keys) == 0 {
@@ -1229,13 +1396,23 @@ func fenceCIDRsFromConfiguredTargetServices(ctx context.Context, c client.Client
 	}
 	var merged []string
 	for _, key := range keys {
+		// Try port-aware discovery first
+		ipPorts := collectServiceBackendIPsWithPorts(ctx, c, key)
+		if len(ipPorts) > 0 {
+			Logf("[INFO]", "%s: service %s/%s backend IPs with ports (Endpoints+EndpointSlice): %v", fenceTargetServicesEnv, key.Namespace, key.Name, ipPorts)
+			merged = append(merged, ipPorts...)
+			continue
+		}
+		// Fall back to plain IP discovery if no ports found
 		ips := collectServiceBackendIPs(ctx, c, key)
-		Logf("[INFO]", "%s: service %s/%s backend IPs (Endpoints+EndpointSlice): %v", fenceTargetServicesEnv, key.Namespace, key.Name, ips)
-		merged = append(merged, ips...)
+		if len(ips) > 0 {
+			Logf("[INFO]", "%s: service %s/%s backend IPs (no port info, Endpoints+EndpointSlice): %v", fenceTargetServicesEnv, key.Namespace, key.Name, ips)
+			merged = append(merged, ips...)
+		}
 	}
-	out := filterEndpointIPsToCIDRs(merged, nodeIPs)
+	out := filterEndpointIPsWithPortsToCIDRs(merged, nodeIPs)
 	if len(out) > 0 {
-		Logf("[INFO]", "%s: fence CIDRs after excluding node InternalIPs: %v", fenceTargetServicesEnv, out)
+		Logf("[INFO]", "%s: fence CIDRs with ports after excluding node InternalIPs: %v", fenceTargetServicesEnv, out)
 	} else if len(merged) > 0 {
 		Logf("[WARN]", "%s: all backend IPs matched node InternalIPs; nothing to fence from configured services", fenceTargetServicesEnv)
 	}

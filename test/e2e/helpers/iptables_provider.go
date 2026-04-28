@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"text/template"
 	"time"
@@ -1057,6 +1058,60 @@ func (p *IptablesFaultProvider) removeFromActiveRules(targetCIDR string) {
 	}
 }
 
+// parseTargetCIDRWithPort parses CIDR:port format and returns (cidr, port, error).
+// Format examples: "192.168.1.10/32:6800" -> ("192.168.1.10/32", "6800", nil)
+//
+//	"192.168.1.10/32" -> ("192.168.1.10/32", "", nil)
+func parseTargetCIDRWithPort(target string) (string, string, error) {
+	// Split by the last colon (IPv6 addresses have colons in the CIDR part)
+	idx := strings.LastIndex(target, ":")
+	if idx <= 0 {
+		// No port specified
+		return target, "", nil
+	}
+
+	cidrPart := target[:idx]
+	portPart := target[idx+1:]
+
+	// Validate that portPart is numeric and cidrPart looks like a CIDR
+	if _, err := strconv.Atoi(portPart); err != nil {
+		// Not a port number - treat as part of the CIDR
+		return target, "", nil
+	}
+
+	// Verify cidrPart has a /prefix
+	if !strings.Contains(cidrPart, "/") {
+		return target, "", nil
+	}
+
+	return cidrPart, portPart, nil
+}
+
+// buildIptablesRuleCommand builds iptables rule command with optional port specification.
+// Example with port: iptables -I OUTPUT -d 192.168.1.10/32 -p tcp --dport 6800 -j REJECT ...
+// Example without port: iptables -I OUTPUT -d 192.168.1.10/32 -j REJECT ...
+func buildIptablesRuleCommand(action, chain, cidr, port string) string {
+	portSpec := ""
+	if port != "" {
+		portSpec = fmt.Sprintf(" -p tcp --dport %s", port)
+	}
+
+	return fmt.Sprintf("$IPT_CMD -C %s -d %s%s -j REJECT --reject-with icmp-host-unreachable 2>/dev/null || \\\n"+
+		"$IPT_CMD -I %s -d %s%s -j REJECT --reject-with icmp-host-unreachable",
+		chain, cidr, portSpec, chain, cidr, portSpec)
+}
+
+// buildIptablesDeleteCommand builds iptables delete rule command with optional port specification.
+func buildIptablesDeleteCommand(chain, cidr, port string) string {
+	portSpec := ""
+	if port != "" {
+		portSpec = fmt.Sprintf(" -p tcp --dport %s", port)
+	}
+
+	return fmt.Sprintf("$IPT_CMD -D %s -d %s%s -j REJECT --reject-with icmp-host-unreachable 2>/dev/null || true",
+		chain, cidr, portSpec)
+}
+
 // executeIptablesCommand executes iptables commands directly on DaemonSet pods via kubectl exec
 func (p *IptablesFaultProvider) executeIptablesCommand(ctx context.Context, targetCIDR, action string) error {
 	clusterContext := p.getClusterContext()
@@ -1115,21 +1170,43 @@ func (p *IptablesFaultProvider) executeIptablesCommand(ctx context.Context, targ
 
 	switch action {
 	case "fence":
+		// Parse CIDR:port format
+		cidr, port, err := parseTargetCIDRWithPort(targetCIDR)
+		if err != nil {
+			return fmt.Errorf("parse target CIDR format: %w", err)
+		}
+
+		if port != "" {
+			Logf("[INFO]", "[%s] FenceIP: using port-aware blocking for %s (port %s)", clusterContext, cidr, port)
+		}
+
+		// Build fence rules for both OUTPUT and FORWARD chains
+		outputRule := buildIptablesRuleCommand("fence", "OUTPUT", cidr, port)
+		forwardRule := buildIptablesRuleCommand("fence", "FORWARD", cidr, port)
+
 		command = baseCommand + fmt.Sprintf(`
-			echo "[$(date)] Fencing %s (OUTPUT+FORWARD: pod traffic uses FORWARD; host uses OUTPUT)"
-			$IPT_CMD -C OUTPUT -d %s -j REJECT --reject-with icmp-host-unreachable 2>/dev/null || \
-			$IPT_CMD -I OUTPUT -d %s -j REJECT --reject-with icmp-host-unreachable
-			$IPT_CMD -C FORWARD -d %s -j REJECT --reject-with icmp-host-unreachable 2>/dev/null || \
-			$IPT_CMD -I FORWARD -d %s -j REJECT --reject-with icmp-host-unreachable
+			echo "[$(date)] Fencing %s (with%s port %s; OUTPUT+FORWARD: pod traffic uses FORWARD; host uses OUTPUT)"
+			%s
+			%s
 			echo "[$(date)] Fenced: %s"
-		`, targetCIDR, targetCIDR, targetCIDR, targetCIDR, targetCIDR, targetCIDR)
+		`, cidr, map[bool]string{true: "", false: "out"}[port != ""], port, outputRule, forwardRule, cidr)
 	case "unfence":
+		// Parse CIDR:port format
+		cidr, port, err := parseTargetCIDRWithPort(targetCIDR)
+		if err != nil {
+			return fmt.Errorf("parse target CIDR format: %w", err)
+		}
+
+		// Build unfence (delete) rules for both chains
+		outputDelete := buildIptablesDeleteCommand("OUTPUT", cidr, port)
+		forwardDelete := buildIptablesDeleteCommand("FORWARD", cidr, port)
+
 		command = baseCommand + fmt.Sprintf(`
 			echo "[$(date)] Unfencing %s"
-			$IPT_CMD -D OUTPUT -d %s -j REJECT --reject-with icmp-host-unreachable 2>/dev/null || true
-			$IPT_CMD -D FORWARD -d %s -j REJECT --reject-with icmp-host-unreachable 2>/dev/null || true
+			%s
+			%s
 			echo "[$(date)] Unfenced: %s"
-		`, targetCIDR, targetCIDR, targetCIDR, targetCIDR)
+		`, cidr, outputDelete, forwardDelete, cidr)
 	default:
 		return fmt.Errorf("invalid action: %s", action)
 	}
