@@ -28,8 +28,9 @@ var _ = Describe("Fault Injection Integration", func() {
 		// Use a test target that should be reachable (Google DNS)
 		targetCIDR = "8.8.8.8/32"
 
-		// Create fault injection provider based on environment configuration
+		// Exercise iptables fault injection explicitly (same as default when E2E_FAULT_INJECTOR is unset).
 		config := helpers.FaultInjectionConfig{
+			Type:      helpers.FaultInjectorIptables,
 			Client:    k8sClient,
 			Namespace: testNamespace,
 		}
@@ -81,8 +82,9 @@ var _ = Describe("Fault Injection Integration", func() {
 			os.Setenv("E2E_FAULT_INJECTOR", "none")
 
 			config := helpers.FaultInjectionConfig{
-				Client:    k8sClient,
-				Namespace: testNamespace,
+				Client:     k8sClient,
+				RESTConfig: GetRESTConfig(),
+				Namespace:  testNamespace,
 			}
 
 			noOpProvider, err := helpers.NewFaultInjectionProvider(config)

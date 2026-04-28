@@ -19,6 +19,7 @@ package replication
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -31,6 +32,40 @@ import (
 	replicationv1alpha1 "github.com/csi-addons/kubernetes-csi-addons/api/replication.storage/v1alpha1"
 	"github.com/csi-addons/kubernetes-csi-addons/test/e2e/helpers"
 )
+
+// establishIptablesFenceBaselines records which probes (ping / ip route) succeed before fencing.
+// Skips only when the cluster path to the peer is unusable for baseline (no probe succeeded — e.g. ICMP blocked everywhere).
+// Timeouts, API errors, or missing CSI_BASELINE are test/infrastructure failures and fail the spec (not Skip).
+func establishIptablesFenceBaselines(ctx context.Context, faultProvider helpers.PeerFenceProvider, cidrs []string) map[string]*helpers.ConnectivityBaseline {
+	if helpers.GetFaultInjectorTypeFromEnv() != helpers.FaultInjectorIptables {
+		return nil
+	}
+	out := make(map[string]*helpers.ConnectivityBaseline, len(cidrs))
+	for _, cidr := range cidrs {
+		b, err := faultProvider.EstablishConnectivityBaseline(ctx, cidr)
+		if err != nil {
+			if iptablesBaselineErrIsSkipEnvironment(err) {
+				Skip("fence baseline: " + err.Error())
+			}
+			Fail(fmt.Sprintf("fence baseline failed (expected reachable path to peer before fence; fix probe/job or networking): %v", err), 1)
+		}
+		out[cidr] = b
+	}
+	return out
+}
+
+func iptablesBaselineErrIsSkipEnvironment(err error) bool {
+	msg := err.Error()
+	return strings.Contains(msg, "no probe succeeded") ||
+		strings.Contains(msg, "cannot verify fencing")
+}
+
+func fenceBaselineRef(m map[string]*helpers.ConnectivityBaseline, cidr string) *helpers.ConnectivityBaseline {
+	if m == nil {
+		return nil
+	}
+	return m[cidr]
+}
 
 var _ = Describe("PromoteVolumeReplication", func() {
 	var ctx context.Context
@@ -439,9 +474,13 @@ var _ = Describe("PromoteVolumeReplication", func() {
 			})
 
 			By("[DR2] Getting fence CIDRs for peer cluster nodes")
-			cidrs = GetFenceCIDRs(ctx, cDR1, env.Provisioner, "temp-nfc-"+nsName)
+			if helpers.GetFaultInjectorTypeFromEnv() == helpers.FaultInjectorIptables {
+				cidrs = GetFenceCIDRsForFaultInjectionPeer(ctx, cDR2, cDR1)
+			} else {
+				cidrs = GetFenceCIDRs(ctx, cDR1, env.Provisioner, "temp-nfc-"+nsName)
+			}
 			if len(cidrs) == 0 {
-				Skip("L1-PROM-003 could not get CIDRs: set FENCE_CIDRS or ensure cluster has nodes with InternalIP")
+				Skip("L1-PROM-003 could not get CIDRs: for iptables set FENCE_CIDRS or FENCE_PEER_SERVICES/FENCE_TARGET_SERVICES; for NetworkFence set FENCE_CIDRS, wait for CSI client CIDRs, or ensure DR1 has node InternalIPs for fallback")
 			}
 
 			By(fmt.Sprintf("[DR2] Using CIDRs for peer cluster fencing: %v", cidrs))
@@ -457,6 +496,8 @@ var _ = Describe("PromoteVolumeReplication", func() {
 			})
 			Expect(err).NotTo(HaveOccurred(), "Failed to create fault injection provider")
 
+			fenceBaselines := establishIptablesFenceBaselines(ctx, faultProvider, cidrs)
+
 			By("[DR2] Fencing peer cluster to simulate network partition")
 			for _, cidr := range cidrs {
 				err = faultProvider.FenceIP(ctx, cidr, nil)
@@ -464,17 +505,30 @@ var _ = Describe("PromoteVolumeReplication", func() {
 			}
 
 			// Verify that fencing is effective
+			var lastFenceVerifyReason string
 			Eventually(func() bool {
+				lastFenceVerifyReason = ""
 				for _, cidr := range cidrs {
-					fenced, err := faultProvider.VerifyConnectivity(ctx, cidr, true)
-					if err != nil || !fenced {
+					fenced, err := faultProvider.VerifyConnectivity(ctx, cidr, true, fenceBaselineRef(fenceBaselines, cidr))
+					if err != nil {
+						lastFenceVerifyReason = fmt.Sprintf("VerifyConnectivity failed for %s: %v", cidr, err)
+						return false
+					}
+					if !fenced {
+						lastFenceVerifyReason = fmt.Sprintf(
+							"probes for %s still match pre-fence reachability (expected partitioned vs baseline; see [DR2] VerifyConnectivity logs above)",
+							cidr)
 						return false
 					}
 				}
 				return true
-			}, 2*time.Minute, 10*time.Second).Should(BeTrue(), "Network should be fenced successfully")
+			}, 2*time.Minute, 10*time.Second).Should(BeTrue(),
+				"L1-PROM-003: after iptables fence, DR2 connectivity jobs must show partition vs baseline within 2m (CIDRs %v). %s",
+				cidrs, lastFenceVerifyReason)
 
 			By("[DR2] Attempting to promote secondary to primary while peer is fenced (force=false; should fail)")
+			err = cDR2.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrDR2.Name}, vrDR2)
+			Expect(err).NotTo(HaveOccurred())
 			vrDR2.Spec.ReplicationState = replicationv1alpha1.Primary
 			err = cDR2.Update(ctx, vrDR2)
 			Expect(err).NotTo(HaveOccurred())
@@ -497,15 +551,26 @@ var _ = Describe("PromoteVolumeReplication", func() {
 			}
 
 			// Verify connectivity is restored
+			var lastUnfenceVerifyReason003 string
 			Eventually(func() bool {
+				lastUnfenceVerifyReason003 = ""
 				for _, cidr := range cidrs {
-					connected, err := faultProvider.VerifyConnectivity(ctx, cidr, false)
-					if err != nil || !connected {
+					connected, err := faultProvider.VerifyConnectivity(ctx, cidr, false, fenceBaselineRef(fenceBaselines, cidr))
+					if err != nil {
+						lastUnfenceVerifyReason003 = fmt.Sprintf("VerifyConnectivity failed for %s: %v", cidr, err)
+						return false
+					}
+					if !connected {
+						lastUnfenceVerifyReason003 = fmt.Sprintf(
+							"probes for %s do not match reachable baseline yet after unfence (see [DR2] VerifyConnectivity logs above)",
+							cidr)
 						return false
 					}
 				}
 				return true
-			}, 2*time.Minute, 10*time.Second).Should(BeTrue(), "Connectivity should be restored after unfencing")
+			}, 2*time.Minute, 10*time.Second).Should(BeTrue(),
+				"L1-PROM-003: after unfence, DR2 connectivity jobs must match pre-fence reachability within 2m (CIDRs %v). %s",
+				cidrs, lastUnfenceVerifyReason003)
 
 			By("[DR2] Waiting for RBD mirror and cluster to recover VR health (Degraded=False)")
 			Eventually(func() bool {
@@ -634,10 +699,17 @@ var _ = Describe("PromoteVolumeReplication", func() {
 			Expect(err).NotTo(HaveOccurred(), "Failed to create fault injection provider")
 
 			By("[DR2] Getting fence CIDRs for peer cluster nodes")
-			cidrs := GetFenceCIDRs(ctx, cDR1, env.Provisioner, "temp-nfc-"+nsName)
-			if len(cidrs) == 0 {
-				Skip("L1-PROM-004 could not get CIDRs: set FENCE_CIDRS or ensure cluster has nodes with InternalIP")
+			var cidrs []string
+			if helpers.GetFaultInjectorTypeFromEnv() == helpers.FaultInjectorIptables {
+				cidrs = GetFenceCIDRsForFaultInjectionPeer(ctx, cDR2, cDR1)
+			} else {
+				cidrs = GetFenceCIDRs(ctx, cDR1, env.Provisioner, "temp-nfc-"+nsName)
 			}
+			if len(cidrs) == 0 {
+				Skip("L1-PROM-004 could not get CIDRs: for iptables set FENCE_CIDRS or FENCE_PEER_SERVICES/FENCE_TARGET_SERVICES; for NetworkFence set FENCE_CIDRS, wait for CSI client CIDRs, or ensure DR1 has node InternalIPs for fallback")
+			}
+
+			fenceBaselines := establishIptablesFenceBaselines(ctx, faultProvider, cidrs)
 
 			By("[DR2] Fencing peer cluster to block access")
 			for _, cidr := range cidrs {
@@ -681,15 +753,26 @@ var _ = Describe("PromoteVolumeReplication", func() {
 			}
 
 			// Verify connectivity is restored
+			var lastUnfenceVerifyReason004 string
 			Eventually(func() bool {
+				lastUnfenceVerifyReason004 = ""
 				for _, cidr := range cidrs {
-					connected, err := faultProvider.VerifyConnectivity(ctx, cidr, false)
-					if err != nil || !connected {
+					connected, err := faultProvider.VerifyConnectivity(ctx, cidr, false, fenceBaselineRef(fenceBaselines, cidr))
+					if err != nil {
+						lastUnfenceVerifyReason004 = fmt.Sprintf("VerifyConnectivity failed for %s: %v", cidr, err)
+						return false
+					}
+					if !connected {
+						lastUnfenceVerifyReason004 = fmt.Sprintf(
+							"probes for %s do not match reachable baseline yet after unfence (see [DR2] VerifyConnectivity logs above)",
+							cidr)
 						return false
 					}
 				}
 				return true
-			}, 2*time.Minute, 10*time.Second).Should(BeTrue(), "Connectivity should be restored after unfencing")
+			}, 2*time.Minute, 10*time.Second).Should(BeTrue(),
+				"L1-PROM-004: after unfence, DR2 connectivity jobs must match pre-fence reachability within 2m (CIDRs %v). %s",
+				cidrs, lastUnfenceVerifyReason004)
 
 			By("[DR2] Waiting for RBD mirror and cluster to recover VR health (Degraded=False)")
 			Eventually(func() bool {
