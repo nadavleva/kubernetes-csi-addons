@@ -133,9 +133,9 @@ var _ = Describe("EnableVolumeReplication", func() {
 		})
 	})
 
-	Describe("L1-E-003-A: Peer unreachable using unified FaultInjectionHandler", func() {
-		It("L1-E-003-A + L1-INFO-005: unified handler abstracts fault injection; fence blocks VR with error, unfence recovers VR with healthy status", func() {
-			SkipIfNotFullDR("L1-E-003-A", "requires two clusters (DR1_CONTEXT and DR2_CONTEXT) to fence peer")
+	Describe("L1-E-003: Peer unreachable using unified FaultInjectionHandler", func() {
+		It("L1-E-003 + L1-INFO-005: unified handler abstracts fault injection; fence blocks VR with error, unfence recovers VR with healthy status", func() {
+			SkipIfNotFullDR("L1-E-003", "requires two clusters (DR1_CONTEXT and DR2_CONTEXT) to fence peer")
 
 			c := GetK8sClient()
 			cDR2 := GetK8sClientForCluster(ClusterDR2)
@@ -171,16 +171,16 @@ var _ = Describe("EnableVolumeReplication", func() {
 			// 2. Check support (skip if not supported)
 			supported, reason := handler.IsSupported(ctx)
 			if !supported {
-				Skip("L1-E-003-A: fault injection not supported: " + reason)
+				Skip("L1-E-003: fault injection not supported: " + reason)
 			}
 
 			// 3. Discover targets FOR the peer cluster being blocked
 			By("Discovering fence targets FOR peer cluster")
 			targets := handler.DiscoverFenceTargetsForClient(ctx, cDR2)
 			if len(targets) == 0 {
-				Skip("L1-E-003-A: set FENCE_CIDRS or FENCE_TARGET_SERVICES (namespace/service list); with full-DR also set FENCE_PEER_SERVICES")
+				Skip("L1-E-003: set FENCE_CIDRS or FENCE_TARGET_SERVICES (namespace/service list); with full-DR also set FENCE_PEER_SERVICES")
 			}
-			Logf("[TEST]", "L1-E-003-A fence targets: %v (handler will add port info for iptables blocking)", targets)
+			Logf("[TEST]", "L1-E-003 fence targets: %v (handler will add port info for iptables blocking)", targets)
 
 			// 4. Create PVC and VRC (only if targets found)
 			By("Creating PVC and waiting for Bound")
@@ -233,9 +233,9 @@ var _ = Describe("EnableVolumeReplication", func() {
 			err = c.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrName}, vr)
 			Expect(err).NotTo(HaveOccurred())
 
-			By("Assertion: L1-E-003-A — VR state is healthy after unfence")
+			By("Assertion: L1-E-003 — VR state is healthy after unfence")
 			Expect(vr.Status.State).To(Or(Equal(replicationv1alpha1.PrimaryState), Equal(replicationv1alpha1.UnknownState)),
-				"L1-E-003-A: VR state must be Primary or Unknown after unfence and successful enable, got %q", vr.Status.State)
+				"L1-E-003: VR state must be Primary or Unknown after unfence and successful enable, got %q", vr.Status.State)
 
 			By("GetVolumeReplicationInfo (L1-INFO-005): Verify VR shows healthy status after unfence")
 			Logf("[L1-INFO-005]", "GetVolumeReplicationInfo: Fetching VR status for health verification (after unfence)")

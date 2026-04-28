@@ -394,10 +394,10 @@ var _ = Describe("PromoteVolumeReplication", func() {
 		})
 	})
 
-	Describe("L1-PROM-003-A: Promote secondary to primary with peer unreachable (unified FaultInjectionHandler)", func() {
-		It("L1-PROM-003-A: fence peer cluster → promote fails → unfence → promote succeeds (using FaultInjectionHandler)", func() {
-			By("Starting L1-PROM-003-A: Promote secondary to primary with peer unreachable (unified handler)")
-			SkipIfNotFullDR("L1-PROM-003-A", "requires two clusters (DR1_CONTEXT and DR2_CONTEXT)")
+	Describe("L1-PROM-003: Promote secondary to primary with peer unreachable (unified FaultInjectionHandler)", func() {
+		It("L1-PROM-003: fence peer cluster → promote fails → unfence → promote succeeds (using FaultInjectionHandler)", func() {
+			By("Starting L1-PROM-003: Promote secondary to primary with peer unreachable (unified handler)")
+			SkipIfNotFullDR("L1-PROM-003", "requires two clusters (DR1_CONTEXT and DR2_CONTEXT)")
 
 			cDR1 := GetK8sClientForCluster(ClusterDR1)
 			cDR2 := GetK8sClientForCluster(ClusterDR2)
@@ -457,16 +457,16 @@ var _ = Describe("PromoteVolumeReplication", func() {
 			// 2. Check if fault injection is supported
 			supported, reason := handler.IsSupported(ctx)
 			if !supported {
-				Skip("L1-PROM-003-A: fault injection not supported: " + reason)
+				Skip("L1-PROM-003: fault injection not supported: " + reason)
 			}
 
 			// 3. Discover targets FOR DR1 using the peer client (validates handler properly discovers for specific client)
 			By("[DR2] Discovering fence targets FOR DR1 cluster using DiscoverFenceTargetsForClient(ctx, cDR1)")
 			targets := handler.DiscoverFenceTargetsForClient(ctx, cDR1)
 			if len(targets) == 0 {
-				Skip("L1-PROM-003-A: could not discover targets for DR1; set FENCE_CIDRS or FENCE_PEER_SERVICES/FENCE_TARGET_SERVICES")
+				Skip("L1-PROM-003: could not discover targets for DR1; set FENCE_CIDRS or FENCE_PEER_SERVICES/FENCE_TARGET_SERVICES")
 			}
-			Logf("[TEST]", "L1-PROM-003-A fence targets for DR1: %v (handler will apply based on injector type)", targets)
+			Logf("[TEST]", "L1-PROM-003 fence targets for DR1: %v (handler will apply based on injector type)", targets)
 
 			// 4. Register cleanup (handler cleanup is called in deferred cleanup)
 			DeferCleanup(func() {
@@ -500,11 +500,11 @@ var _ = Describe("PromoteVolumeReplication", func() {
 			err = cDR2.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrDR2.Name}, vrDR2)
 			Expect(err).NotTo(HaveOccurred())
 
-			By("Assertions: L1-PROM-003-A — promote with peer down (force=false) fails")
+			By("Assertions: L1-PROM-003 — promote with peer down (force=false) fails")
 			Expect(hasVolumeReplicationErrorCondition(vrDR2)).To(BeTrue(),
-				"L1-PROM-003-A: VR with fenced peer must have error condition (message: %q)", vrDR2.Status.Message)
+				"L1-PROM-003: VR with fenced peer must have error condition (message: %q)", vrDR2.Status.Message)
 			Expect(vrDR2.Status.State).NotTo(Equal(replicationv1alpha1.PrimaryState),
-				"L1-PROM-003-A: VR state should not change to Primary when peer is unreachable with force=false")
+				"L1-PROM-003: VR state should not change to Primary when peer is unreachable with force=false")
 
 			// 7. Remove fault injection (handler validates connectivity is restored internally)
 			By("[DR2] Removing fault injection (handler validates connectivity is restored)")
@@ -548,18 +548,18 @@ var _ = Describe("PromoteVolumeReplication", func() {
 			err = cDR2.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrDR2.Name}, vrDR2)
 			Expect(err).NotTo(HaveOccurred())
 
-			By("Assertions: L1-PROM-003-A — promote succeeds after unfence")
+			By("Assertions: L1-PROM-003 — promote succeeds after unfence")
 			Expect(vrDR2.Status.State).To(Or(Equal(replicationv1alpha1.PrimaryState), Equal(replicationv1alpha1.UnknownState)),
-				"L1-PROM-003-A: VR state must be Primary or Unknown after unfence and successful promote, got %q", vrDR2.Status.State)
+				"L1-PROM-003: VR state must be Primary or Unknown after unfence and successful promote, got %q", vrDR2.Status.State)
 			Expect(hasReplicationSuccessCondition(vrDR2)).To(BeTrue(),
-				"L1-PROM-003-A: VR must have Replicating or Completed condition after successful promote")
+				"L1-PROM-003: VR must have Replicating or Completed condition after successful promote")
 		})
 	})
 
-	Describe("L1-PROM-004-A: Force promote secondary to primary with peer unreachable (unified FaultInjectionHandler)", func() {
-		It("L1-PROM-004-A: fence peer cluster → force promote succeeds → unfence → verify stability (using FaultInjectionHandler)", func() {
-			By("Starting L1-PROM-004-A: Force promote secondary to primary with peer unreachable (unified handler)")
-			SkipIfNotFullDR("L1-PROM-004-A", "requires two clusters (DR1_CONTEXT and DR2_CONTEXT)")
+	Describe("L1-PROM-004: Force promote secondary to primary with peer unreachable (unified FaultInjectionHandler)", func() {
+		It("L1-PROM-004: fence peer cluster → force promote succeeds → unfence → verify stability (using FaultInjectionHandler)", func() {
+			By("Starting L1-PROM-004: Force promote secondary to primary with peer unreachable (unified handler)")
+			SkipIfNotFullDR("L1-PROM-004", "requires two clusters (DR1_CONTEXT and DR2_CONTEXT)")
 
 			cDR1 := GetK8sClientForCluster(ClusterDR1)
 			cDR2 := GetK8sClientForCluster(ClusterDR2)
@@ -619,17 +619,17 @@ var _ = Describe("PromoteVolumeReplication", func() {
 			// 2. Check if fault injection is supported
 			supported, reason := handler.IsSupported(ctx)
 			if !supported {
-				Skip("L1-PROM-004-A: fault injection not supported: " + reason)
+				Skip("L1-PROM-004: fault injection not supported: " + reason)
 			}
 
 			// 3. Discover targets FOR peer DR1 (NOT from DR2 context - we want to fence DR1)
 			By("[DR2] Discovering fence targets FOR peer DR1 cluster using DiscoverFenceTargetsForClient(ctx, cDR1)")
 			targets := handler.DiscoverFenceTargetsForClient(ctx, cDR1)
 			if len(targets) == 0 {
-				Skip("L1-PROM-004-A: could not discover targets for peer DR1; set FENCE_CIDRS or FENCE_PEER_SERVICES/FENCE_TARGET_SERVICES")
+				Skip("L1-PROM-004: could not discover targets for peer DR1; set FENCE_CIDRS or FENCE_PEER_SERVICES/FENCE_TARGET_SERVICES")
 			}
-			Logf("[TEST]", "L1-PROM-004-A: Discovered %d targets FOR peer DR1: %v (handler created on DR2 with Client=DR2, PeerClient=DR1)", len(targets), targets)
-			Logf("[TEST]", "L1-PROM-004-A: Handler config - Client=DR2 (local), PeerClient=DR1 (peer target discovery) (IsFullDRMode=%v)", IsFullDRMode())
+			Logf("[TEST]", "L1-PROM-004: Discovered %d targets FOR peer DR1: %v (handler created on DR2 with Client=DR2, PeerClient=DR1)", len(targets), targets)
+			Logf("[TEST]", "L1-PROM-004: Handler config - Client=DR2 (local), PeerClient=DR1 (peer target discovery) (IsFullDRMode=%v)", IsFullDRMode())
 
 			// 4. Register cleanup (handler cleanup is called in deferred cleanup)
 			DeferCleanup(func() {
@@ -648,9 +648,9 @@ var _ = Describe("PromoteVolumeReplication", func() {
 
 			// 5. Apply fault injection (handler validates fence is active internally)
 			By(fmt.Sprintf("[DR2] Applying fault injection to targets: %v (handler validates fence is active)", targets))
-			Logf("[TEST]", "L1-PROM-004-A: Before ApplyFence - targets to be fenced: %v", targets)
+			Logf("[TEST]", "L1-PROM-004: Before ApplyFence - targets to be fenced: %v", targets)
 			applyErr := handler.ApplyFence(ctx, targets)
-			Logf("[TEST]", "L1-PROM-004-A: After ApplyFence - error: %v (should be nil)", applyErr)
+			Logf("[TEST]", "L1-PROM-004: After ApplyFence - error: %v (should be nil)", applyErr)
 			Expect(applyErr).To(Succeed(), "handler.ApplyFence")
 
 			// 6. Attempt force promote (force=true; should succeed even with peer unreachable)
@@ -677,17 +677,17 @@ var _ = Describe("PromoteVolumeReplication", func() {
 			err = cDR2.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrDR2.Name}, vrDR2)
 			Expect(err).NotTo(HaveOccurred())
 
-			By("Assertions: L1-PROM-004-A — force promote with peer down succeeds")
+			By("Assertions: L1-PROM-004 — force promote with peer down succeeds")
 			Expect(vrDR2.Status.State).To(Or(Equal(replicationv1alpha1.PrimaryState), Equal(replicationv1alpha1.UnknownState)),
-				"L1-PROM-004-A: VR state must be Primary or Unknown after force promote, got %q", vrDR2.Status.State)
+				"L1-PROM-004: VR state must be Primary or Unknown after force promote, got %q", vrDR2.Status.State)
 			Expect(hasReplicationSuccessCondition(vrDR2)).To(BeTrue(),
-				"L1-PROM-004-A: VR must have Replicating or Completed condition after force promote")
+				"L1-PROM-004: VR must have Replicating or Completed condition after force promote")
 
 			// 7. Remove fault injection (handler validates connectivity is restored internally)
 			By("[DR2] Removing fault injection (handler validates connectivity is restored)")
-			Logf("[TEST]", "L1-PROM-004-A: Before RemoveFence - removing fence for targets: %v", targets)
+			Logf("[TEST]", "L1-PROM-004: Before RemoveFence - removing fence for targets: %v", targets)
 			removeErr := handler.RemoveFence(ctx)
-			Logf("[TEST]", "L1-PROM-004-A: After RemoveFence - error: %v (should be nil)", removeErr)
+			Logf("[TEST]", "L1-PROM-004: After RemoveFence - error: %v (should be nil)", removeErr)
 			Expect(removeErr).To(Succeed(), "handler.RemoveFence")
 
 			// 8. Wait for RBD mirror and cluster to recover VR health
@@ -719,9 +719,9 @@ var _ = Describe("PromoteVolumeReplication", func() {
 			}, 2*time.Minute, 5*time.Second).Should(Or(Equal(replicationv1alpha1.PrimaryState), Equal(replicationv1alpha1.UnknownState)),
 				"VR state should stabilize and remain Primary or Unknown after unfence")
 
-			By("Assertions: L1-PROM-004-A — VR remains stable after unfence")
+			By("Assertions: L1-PROM-004 — VR remains stable after unfence")
 			Expect(vrDR2.Status.State).To(Or(Equal(replicationv1alpha1.PrimaryState), Equal(replicationv1alpha1.UnknownState)),
-				"L1-PROM-004-A: VR state should remain Primary or Unknown after unfence, got %q", vrDR2.Status.State)
+				"L1-PROM-004: VR state should remain Primary or Unknown after unfence, got %q", vrDR2.Status.State)
 		})
 	})
 

@@ -215,10 +215,10 @@ var _ = Describe("DemoteVolumeReplication", func() {
 		})
 	})
 
-	Describe("L1-DEM-003-A: Demote primary to secondary, then verify stability with peer unreachable (using FaultInjectionHandler)", func() {
-		It("L1-DEM-003-A: demote while reachable → fault inject peer → verify stable → remove fault inject (using FaultInjectionHandler)", func() {
-			By("Starting L1-DEM-003-A: Demote primary to secondary, then verify stability with peer unreachable (using FaultInjectionHandler)")
-			SkipIfNotFullDR("L1-DEM-003-A", "requires two clusters (DR1_CONTEXT and DR2_CONTEXT)")
+	Describe("L1-DEM-003: Demote primary to secondary, then verify stability with peer unreachable (using FaultInjectionHandler)", func() {
+		It("L1-DEM-003: demote while reachable → fault inject peer → verify stable → remove fault inject (using FaultInjectionHandler)", func() {
+			By("Starting L1-DEM-003: Demote primary to secondary, then verify stability with peer unreachable (using FaultInjectionHandler)")
+			SkipIfNotFullDR("L1-DEM-003", "requires two clusters (DR1_CONTEXT and DR2_CONTEXT)")
 
 			cDR1 := GetK8sClientForCluster(ClusterDR1)
 			cDR2 := GetK8sClientForCluster(ClusterDR2)
@@ -267,16 +267,16 @@ var _ = Describe("DemoteVolumeReplication", func() {
 			By("Validating fault injection support before resource creation")
 			supported, reason := handler.IsSupported(ctx)
 			if !supported {
-				Skip("L1-DEM-003-A: fault injection not supported: " + reason)
+				Skip("L1-DEM-003: fault injection not supported: " + reason)
 			}
 
 			By("Discovering fence targets FOR peer DR2 before resource creation")
 			targets := handler.DiscoverFenceTargetsForClient(ctx, cDR2)
 			if len(targets) == 0 {
-				Skip("L1-DEM-003-A: could not discover targets for peer DR2; set FENCE_CIDRS or FENCE_PEER_SERVICES/FENCE_TARGET_SERVICES")
+				Skip("L1-DEM-003: could not discover targets for peer DR2; set FENCE_CIDRS or FENCE_PEER_SERVICES/FENCE_TARGET_SERVICES")
 			}
-			Logf("[TEST]", "L1-DEM-003-A: [EARLY] Discovered %d targets FOR peer DR2: %v (handler created on DR1 with Client=DR1, PeerClient=DR2)", len(targets), targets)
-			Logf("[TEST]", "L1-DEM-003-A: [EARLY] Handler config validated - Client=DR1 (local), PeerClient=DR2 (peer target discovery) (IsFullDRMode=%v)", IsFullDRMode())
+			Logf("[TEST]", "L1-DEM-003: [EARLY] Discovered %d targets FOR peer DR2: %v (handler created on DR1 with Client=DR1, PeerClient=DR2)", len(targets), targets)
+			Logf("[TEST]", "L1-DEM-003: [EARLY] Handler config validated - Client=DR1 (local), PeerClient=DR2 (peer target discovery) (IsFullDRMode=%v)", IsFullDRMode())
 
 			By("Creating primary PVC and VR on DR1")
 			pvcDR1 := CreatePVC(ctx, cDR1, nsName, "pvc-dr1-dem-003a", env.StorageClass, "1Gi", func(p *corev1.PersistentVolumeClaim) {
@@ -373,17 +373,17 @@ var _ = Describe("DemoteVolumeReplication", func() {
 			err = cDR1.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrDR1.Name}, vrDR1)
 			Expect(err).NotTo(HaveOccurred())
 
-			By("Assertions: L1-DEM-003-A — demote succeeds while peer is reachable")
+			By("Assertions: L1-DEM-003 — demote succeeds while peer is reachable")
 			Expect(vrDR1.Status.State).To(Or(Equal(replicationv1alpha1.SecondaryState), Equal(replicationv1alpha1.UnknownState)),
-				"L1-DEM-003-A: VR state must transition to Secondary or Unknown after demote, got %q", vrDR1.Status.State)
+				"L1-DEM-003: VR state must transition to Secondary or Unknown after demote, got %q", vrDR1.Status.State)
 			Expect(hasReplicationSuccessCondition(vrDR1)).To(BeTrue(),
-				"L1-DEM-003-A: VR must have Replicating or Completed condition after demote")
+				"L1-DEM-003: VR must have Replicating or Completed condition after demote")
 
 			// Now apply fault injection to test demoted state remains stable
 			By(fmt.Sprintf("[DR1] Applying fault injection to targets: %v (test demoted state stability)", targets))
-			Logf("[TEST]", "L1-DEM-003-A: Before ApplyFence - targets to be fenced: %v", targets)
+			Logf("[TEST]", "L1-DEM-003: Before ApplyFence - targets to be fenced: %v", targets)
 			applyErr := handler.ApplyFence(ctx, targets)
-			Logf("[TEST]", "L1-DEM-003-A: After ApplyFence - error: %v (should be nil)", applyErr)
+			Logf("[TEST]", "L1-DEM-003: After ApplyFence - error: %v (should be nil)", applyErr)
 			Expect(applyErr).To(Succeed(), "handler.ApplyFence")
 
 			By("[DR1] Verifying VR remains stable while peer is fenced")
@@ -395,15 +395,15 @@ var _ = Describe("DemoteVolumeReplication", func() {
 			err = cDR1.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrDR1.Name}, vrDR1)
 			Expect(err).NotTo(HaveOccurred())
 
-			By("Assertions: L1-DEM-003-A — demoted state is stable while peer is fenced")
+			By("Assertions: L1-DEM-003 — demoted state is stable while peer is fenced")
 			Expect(vrDR1.Status.State).To(Or(Equal(replicationv1alpha1.SecondaryState), Equal(replicationv1alpha1.UnknownState)),
-				"L1-DEM-003-A: VR state must remain Secondary or Unknown while peer is fenced, got %q", vrDR1.Status.State)
+				"L1-DEM-003: VR state must remain Secondary or Unknown while peer is fenced, got %q", vrDR1.Status.State)
 
 			// Remove fault injection (handler validates connectivity is restored internally)
 			By("[DR1] Removing fault injection (handler validates connectivity is restored)")
-			Logf("[TEST]", "L1-DEM-003-A: Before RemoveFence - removing fence for targets: %v", targets)
+			Logf("[TEST]", "L1-DEM-003: Before RemoveFence - removing fence for targets: %v", targets)
 			removeErr := handler.RemoveFence(ctx)
-			Logf("[TEST]", "L1-DEM-003-A: After RemoveFence - error: %v (should be nil)", removeErr)
+			Logf("[TEST]", "L1-DEM-003: After RemoveFence - error: %v (should be nil)", removeErr)
 			Expect(removeErr).To(Succeed(), "handler.RemoveFence")
 
 			By("[DR1] Verifying VR remains stable after removing fault injection")
@@ -415,9 +415,9 @@ var _ = Describe("DemoteVolumeReplication", func() {
 			err = cDR1.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrDR1.Name}, vrDR1)
 			Expect(err).NotTo(HaveOccurred())
 
-			By("Assertions: L1-DEM-003-A — final state is stable after removing fault injection")
+			By("Assertions: L1-DEM-003 — final state is stable after removing fault injection")
 			Expect(vrDR1.Status.State).To(Or(Equal(replicationv1alpha1.SecondaryState), Equal(replicationv1alpha1.UnknownState)),
-				"L1-DEM-003-A: VR state must remain Secondary or Unknown after removing fault injection, got %q", vrDR1.Status.State)
+				"L1-DEM-003: VR state must remain Secondary or Unknown after removing fault injection, got %q", vrDR1.Status.State)
 		})
 	})
 

@@ -226,10 +226,10 @@ var _ = Describe("DisableVolumeReplication", func() {
 		})
 	})
 
-	Describe("L1-DIS-005-A: Disable with peer unreachable (unified FaultInjectionHandler)", func() {
-		It("L1-DIS-005-A: unified handler abstracts NetworkFence/iptables; blocks peer, VR fails, unfence allows delete", func() {
-			By("L1-DIS-005-A: FaultInjectionHandler blocks peer; create VR, attempt disable (similar to L1-DIS-005 but via handler)")
-			SkipIfNotFullDR("L1-DIS-005-A", "requires two clusters (DR1_CONTEXT and DR2_CONTEXT) to fence peer")
+	Describe("L1-DIS-005: Disable with peer unreachable (unified FaultInjectionHandler)", func() {
+		It("L1-DIS-005: unified handler abstracts NetworkFence/iptables; blocks peer, VR fails, unfence allows delete", func() {
+			By("L1-DIS-005: FaultInjectionHandler blocks peer; create VR, attempt disable (similar to L1-DIS-005 but via handler)")
+			SkipIfNotFullDR("L1-DIS-005", "requires two clusters (DR1_CONTEXT and DR2_CONTEXT) to fence peer")
 
 			c := GetK8sClient()
 			cDR2 := GetK8sClientForCluster(ClusterDR2)
@@ -261,13 +261,13 @@ var _ = Describe("DisableVolumeReplication", func() {
 			// Skip if not supported (e.g., no NetworkFence CRDs and E2E_FAULT_INJECTOR not set)
 			supported, reason := handler.IsSupported(ctx)
 			if !supported {
-				Skip("L1-DIS-005-A: " + reason)
+				Skip("L1-DIS-005: " + reason)
 			}
 
 			// Discover targets FOR the peer cluster being blocked
 			targets := handler.DiscoverFenceTargetsForClient(ctx, cDR2)
 			if len(targets) == 0 {
-				Skip("L1-DIS-005-A could not discover targets: set FENCE_CIDRS or FENCE_TARGET_SERVICES for iptables; with full-DR also set FENCE_PEER_SERVICES")
+				Skip("L1-DIS-005 could not discover targets: set FENCE_CIDRS or FENCE_TARGET_SERVICES for iptables; with full-DR also set FENCE_PEER_SERVICES")
 			}
 
 			By("Creating PVC and waiting for Bound")
@@ -300,22 +300,22 @@ var _ = Describe("DisableVolumeReplication", func() {
 			By("Waiting for VR to report error due to blocked peer")
 			WaitForVolumeReplicationErrorWithTimeout(ctx, c, vr, quickErrorTimeout)
 
-			By("L1-DIS-005-A: Attempting to delete VR while peer unreachable (force=false, should fail gracefully)")
+			By("L1-DIS-005: Attempting to delete VR while peer unreachable (force=false, should fail gracefully)")
 			DeleteVolumeReplicationWithCleanup(ctx, c, vr)
 
-			By("L1-DIS-005-A: Removing fault injection to restore connectivity")
+			By("L1-DIS-005: Removing fault injection to restore connectivity")
 			Expect(handler.RemoveFence(ctx)).To(Succeed())
 
-			By("L1-DIS-005-A: Attempting to delete VR again (now peer is reachable; should succeed)")
+			By("L1-DIS-005: Attempting to delete VR again (now peer is reachable; should succeed)")
 			DeleteVolumeReplicationWithCleanup(ctx, c, vr)
 
-			By("L1-DIS-005-A: Assertion — VR deletion completed after unfence (graceful disable)")
+			By("L1-DIS-005: Assertion — VR deletion completed after unfence (graceful disable)")
 			err = c.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrName}, vr)
 			Expect(err).To(HaveOccurred())
 			Expect(errors.IsNotFound(err)).To(BeTrue(),
 				"VR should be gone after unfence and graceful disable")
 
-			By("L1-DIS-005-A: Assertion — PVC remains bound (replication removed)")
+			By("L1-DIS-005: Assertion — PVC remains bound (replication removed)")
 			err = c.Get(ctx, client.ObjectKey{Namespace: nsName, Name: pvc.Name}, pvc)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(pvc.Status.Phase).To(Equal(corev1.ClaimBound),
@@ -323,10 +323,10 @@ var _ = Describe("DisableVolumeReplication", func() {
 		})
 	})
 
-	Describe("L1-DIS-006-A: Disable with peer unreachable (unified FaultInjectionHandler, force=true)", func() {
-		It("L1-DIS-006-A: unified handler abstracts NetworkFence/iptables; blocks peer, VR fails, force delete succeeds immediately", func() {
-			By("L1-DIS-006-A: FaultInjectionHandler blocks peer; create VR, force delete (immediate success expected)")
-			SkipIfNotFullDR("L1-DIS-006-A", "requires two clusters (DR1_CONTEXT and DR2_CONTEXT) to fence peer")
+	Describe("L1-DIS-006: Disable with peer unreachable (unified FaultInjectionHandler, force=true)", func() {
+		It("L1-DIS-006: unified handler abstracts NetworkFence/iptables; blocks peer, VR fails, force delete succeeds immediately", func() {
+			By("L1-DIS-006: FaultInjectionHandler blocks peer; create VR, force delete (immediate success expected)")
+			SkipIfNotFullDR("L1-DIS-006", "requires two clusters (DR1_CONTEXT and DR2_CONTEXT) to fence peer")
 
 			c := GetK8sClient()
 			cDR2 := GetK8sClientForCluster(ClusterDR2)
@@ -358,13 +358,13 @@ var _ = Describe("DisableVolumeReplication", func() {
 			// Skip if not supported (e.g., no NetworkFence CRDs and E2E_FAULT_INJECTOR not set)
 			supported, reason := handler.IsSupported(ctx)
 			if !supported {
-				Skip("L1-DIS-006-A: " + reason)
+				Skip("L1-DIS-006: " + reason)
 			}
 
 			// Discover targets FOR the peer cluster being blocked
 			targets := handler.DiscoverFenceTargetsForClient(ctx, cDR2)
 			if len(targets) == 0 {
-				Skip("L1-DIS-006-A could not discover targets: set FENCE_CIDRS or FENCE_TARGET_SERVICES for iptables; with full-DR also set FENCE_PEER_SERVICES")
+				Skip("L1-DIS-006 could not discover targets: set FENCE_CIDRS or FENCE_TARGET_SERVICES for iptables; with full-DR also set FENCE_PEER_SERVICES")
 			}
 
 			By("Creating PVC and waiting for Bound")
@@ -397,16 +397,16 @@ var _ = Describe("DisableVolumeReplication", func() {
 			By("Waiting for VR to report error due to blocked peer")
 			WaitForVolumeReplicationError(ctx, c, vr)
 
-			By("L1-DIS-006-A: Attempting to delete VR with force=true (immediate disable expected, peer still blocked)")
+			By("L1-DIS-006: Attempting to delete VR with force=true (immediate disable expected, peer still blocked)")
 			DeleteVolumeReplicationWithCleanup(ctx, c, vr)
 
-			By("L1-DIS-006-A: Assertion — VR deleted successfully with force=true (unreachable peer handled)")
+			By("L1-DIS-006: Assertion — VR deleted successfully with force=true (unreachable peer handled)")
 			err = c.Get(ctx, client.ObjectKey{Namespace: nsName, Name: vrName}, vr)
 			Expect(err).To(HaveOccurred())
 			Expect(errors.IsNotFound(err)).To(BeTrue(),
 				"VR should be gone after force DisableVolumeReplication with unreachable peer")
 
-			By("L1-DIS-006-A: Assertion — PVC remains bound (primary writeable)")
+			By("L1-DIS-006: Assertion — PVC remains bound (primary writeable)")
 			err = c.Get(ctx, client.ObjectKey{Namespace: nsName, Name: pvc.Name}, pvc)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(pvc.Status.Phase).To(Equal(corev1.ClaimBound),
