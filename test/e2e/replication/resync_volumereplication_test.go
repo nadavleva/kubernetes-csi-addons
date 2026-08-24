@@ -296,7 +296,7 @@ var _ = Describe("ResyncVolumeReplication", func() {
 			case helpers.FaultInjectorNone:
 				Skip("L1-RSYNC-003: requires fault injection (set E2E_FAULT_INJECTOR=networkfence)")
 			case helpers.FaultInjectorIptables:
-				Skip("L1-RSYNC-003: iptables fault injection skipped due to: (1) timing issues interfere with controller resync retry logic, (2) cannot reliably mimic split-brain scenario (see: https://github.com/nadavleva/kubernetes-csi-addons/issues/XXX)")
+				Skip("L1-RSYNC-003: iptables fault injection skipped due to: (1) timing issues interfere with controller resync retry logic, (2) cannot reliably mimic split-brain scenario (see: https://github.com/nadavleva/kubernetes-csi-addons/issues/24)")
 			case helpers.FaultInjectorNetworkFence:
 				// FaultInjectionHandler with NetworkFence is supported (Ceph-specific; most storage arrays lack NetworkFence support)
 			default:
